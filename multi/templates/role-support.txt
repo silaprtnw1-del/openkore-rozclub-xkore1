@@ -1,0 +1,80 @@
+﻿# ==========================================================================
+# Role "support": follows {{FOLLOW}}, stays in the same party, heals and buffs.
+# ==========================================================================
+
+# Following {{FOLLOW}}
+follow 1
+followTarget {{FOLLOW}}
+followEmotion 0
+followFaceDirection 0
+followDistanceMax 6
+followDistanceMin 3
+followLostStep 12
+followSitAuto 0
+followBot 0
+
+# Accept party invitations automatically: partyAuto 2 = accept, 1 = refuse (the leader sets exp share in game).
+partyAuto 2
+
+# Combat: only fight back when something attacks this character; never pull
+# monsters and do not copy the leader's targets.
+attackAuto 1
+attackAuto_party 0
+attackAuto_followTarget 0
+attackAuto_onlyWhenSafe 0
+attackAuto_notInTown 1
+attackDistance 1.5
+attackDistanceAuto 0
+attackMaxDistance 2.5
+attackUseWeapon 1
+attackNoGiveup 0
+attackCanSnipe 0
+attackCheckLOS 0
+
+# No loot, no random walking, no teleporting: stay with the leader.
+itemsTakeAuto 0
+itemsGatherAuto 0
+route_randomWalk 0
+teleportAuto_idle 0
+teleportAuto_search 0
+teleportAuto_unstuck 0
+
+# Support skills (order = priority). Skill handles: AL_HEAL, AL_BLESSING, AL_INCAGI.
+# They only work once learned (spend the skill points in game); until then the
+# server simply ignores the cast. The highest learned level is used.
+partySkillDistance 0..8
+
+partySkill AL_HEAL {
+	target {{HEAL_TARGETS}}
+	target_hp < 65%
+	target_timeout 2
+	sp > 20%
+	notWhileSitting 1
+	disabled 0
+}
+
+partySkill AL_BLESSING {
+	target {{FOLLOW}}
+	target_whenStatusInactive Blessing
+	target_timeout 230
+	sp > 30%
+	notWhileSitting 1
+	disabled 0
+}
+
+# Increase Agility costs HP as well as SP, so it also needs some HP left.
+partySkill AL_INCAGI {
+	target {{FOLLOW}}
+	target_whenStatusInactive Increase Agility
+	target_timeout 80
+	sp > 30%
+	hp > 40%
+	notWhileSitting 1
+	disabled 0
+}
+
+# Optional, enable when OpenKore should spend the points for you:
+#statsAddAuto 1
+#statsAddAuto_list 14 int, 16 agi, 15 vit
+#skillsAddAuto 1
+#skillsAddAuto_list AL_DP 5, AL_DEMONBANE 3, AL_HEAL 5, AL_BLESSING 5, AL_INCAGI 5

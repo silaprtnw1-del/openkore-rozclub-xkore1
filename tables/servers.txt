@@ -1,0 +1,10 @@
+[ROZCLUB_XKore1]
+ip 15.235.236.242
+port 6900
+version 55
+master_version 1
+serverType kRO_RagexeRE_2021_11_03
+serverEncoding Thai
+charBlockSize 175
+pinCode 1
+addTableFolders kRO/Ragexe_2021_11_03;tRO;iRO;kRO

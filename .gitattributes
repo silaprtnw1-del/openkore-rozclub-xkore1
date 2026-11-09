@@ -1,0 +1,3 @@
+# Store every file byte-for-byte: OpenKore control files and .cmd scripts mix
+# CRLF/LF on purpose, and line-ending conversion would change them.
+* -text

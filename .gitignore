@@ -1,0 +1,36 @@
+# ---- secrets / per-machine settings -------------------------------------
+gui/settings.json
+gui/settings.json.tmp
+
+# ---- runtime output -----------------------------------------------------
+logs/
+**/logs/
+*.pcapng
+gui/gui-error.log*
+gui/gui-crash.log
+
+# ---- caches -------------------------------------------------------------
+gui/cache/
+__pycache__/
+*.pyc
+.mypy_cache/
+
+# ---- backups and temp files (git history replaces .bak copies) ----------
+*.bak
+*.bak-*
+*.bak.*
+*.tmp
+*.gui-tmp
+
+# ---- built binaries: not versioned (decision 2026-11-10) ----------------
+# Rebuild: runtime-src/ (native helpers) and `roz build` (NetRedirect DLL).
+runtime/
+build/
+*.dll
+*.exe
+*.o
+
+# ---- other repos / local-only material ----------------------------------
+tools/packetExtractor/
+evidence/
+_archive/

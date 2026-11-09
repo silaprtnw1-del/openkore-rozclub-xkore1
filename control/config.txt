@@ -1,0 +1,332 @@
+master ROZCLUB_XKore1
+server 0
+username
+password
+loginPinCode
+char 0
+
+XKore 1
+XKore_port 2351
+XKore_dll NetRedirect-ROZ-IAT-v3.dll
+XKore_exeName Ragnarok.exe
+XKore_bypassBotDetection 0
+XKore_silent 0
+XKore_Seal 0
+XKore_transitionTrace 0
+
+poseidonServer 127.0.0.1
+poseidonPort 24390
+bindIp
+forceMapIP
+
+# ==========================================
+# ROZCLUB Live Market Plugin Configuration
+# ==========================================
+rozclubMarket_auto 1
+rozclubMarket_minZeny 1000
+
+# ==========================================
+# Sight & Pathing Core Settings (CRITICAL)
+# ==========================================
+clientSight 17
+maxUnobstructedWalkPathDistance 17
+maxObstructedWalkPathDistance 14
+modifiedWalkDistance 3
+
+# ==========================================
+# Bot Combat Configuration (Attack All Monsters)
+# ==========================================
+attackAuto 2
+attackAuto_routeToLock 1
+attackAuto_outOfLock 2
+attackAuto_party 1
+attackAuto_onlyWhenSafe 0
+attackAuto_followTarget 1
+attackAuto_inLockOnly 0
+attackAuto_notInTown 1
+attackDistance 1.5
+attackDistanceAuto 0
+attackMaxDistance 2.5
+attackMaxRouteDistance 100
+attackRouteMaxPathDistance 30
+attackMaxRouteTime 3
+attackMinPlayerDistance 1
+attackMinPortalDistance 4
+attackUseWeapon 1
+attackNoGiveup 0
+attackCanSnipe 0
+attackCheckLOS 0
+attackLooters 1
+attackChangeTarget 1
+attackUpdateMonsterPos 1
+attackWaitApproachFinish 0
+attackComboSlot
+attackEquip_topHead
+attackEquip_midHead
+attackEquip_lowHead
+attackEquip_leftHand
+attackEquip_rightHand
+attackEquip_leftAccessory
+attackEquip_rightAccessory
+attackEquip_robe
+attackEquip_armor
+attackEquip_shoes
+attackEquip_arrow
+
+# ==========================================
+# Item Looting & Weight Thresholds
+# ==========================================
+itemsTakeAuto 2
+itemsTakeAuto_party 1
+itemsTakeAuto_new 0
+itemsGatherAuto 1
+itemsGatherAuto_notInTown 1
+itemsGatherAutoMinPlayerDistance 1
+itemsGatherAutoMinPortalDistance 3
+itemsMaxWeight 48
+itemsMaxWeight_sellOrStore 49
+itemsMaxNum_sellOrStore 95
+itemsTakeGreed 1
+itemsCheckWeight 1
+
+# ==========================================
+# LockMap & SaveMap (Morocc <-> moc_fild01, Muka) - base moved to Morocc 2026-11-06
+# ==========================================
+lockMap pay_dun00
+lockMap_x
+lockMap_y
+lockMap_randX
+lockMap_randY
+
+saveMap payon
+saveMap_warpToBuyOrSell 1
+saveMap_warpChatCommand
+
+# ==========================================
+# Auto-Storage (Payon Central Kafra: 181 104)
+# Stores items marked 0 1 0 in items_control.txt
+# ==========================================
+storageAuto 1
+storageAuto_npc payon 181 104
+storageAuto_distance 5
+storageAuto_npc_type 1
+storageAuto_npc_steps c r1 n
+storageAuto_password
+storageAuto_keepOpen 0
+storageAuto_useChatCommand
+storageAuto_notAfterDeath 0
+relogAfterStorage 0
+minStorageZeny 50
+npcTimeResponse 5
+
+# Disabled 2026-11-06: the character already carries [Not For Sale] Novice
+# Fly Wing (12323) and Novice Butterfly Wing (12324), so no restocking needed.
+getAuto Fly Wing {
+	minAmount 10
+	maxAmount 50
+	passive 0
+	disabled 0
+}
+
+getAuto Butterfly Wing {
+	minAmount 2
+	maxAmount 10
+	passive 0
+	disabled 1
+}
+
+# ==========================================
+# Auto-Sell & Auto-Restock (Payon Tool Dealer: 159 96)
+# Sells trash marked 0 0 1 in items_control.txt
+# ==========================================
+sellAuto 1
+sellAuto_npc payon 159 96
+sellAuto_standpoint
+sellAuto_distance 5
+sellAuto_npc_steps s
+
+buyAuto Fly Wing {
+	npc payon 159 96
+	standpoint
+	distance 5
+	price 250
+	minAmount 10
+	maxAmount 50
+	zeny > 15000
+	disabled 0
+}
+
+buyAuto Butterfly Wing {
+	npc payon 159 96
+	standpoint
+	distance 5
+	price 1000
+	minAmount 2
+	maxAmount 10
+	zeny > 12000
+	disabled 1
+}
+
+# Added 2026-11-06: restock potions at the Tool Dealer (by item ID, so the
+# Thai/Korean item names don't matter). The zeny guard keeps enough money
+# for Kafra storage fees.
+# 645 Concentration Potion (1,200z)
+buyAuto 645 {
+	npc payon 159 96
+	standpoint
+	distance 5
+	price 1200
+	minAmount 2
+	maxAmount 5
+	zeny > 20000
+	disabled 0
+}
+
+# 501 Red Potion (10z)
+buyAuto 501 {
+	npc payon 159 96
+	standpoint
+	distance 5
+	price 10
+	minAmount 3
+	maxAmount 10
+	zeny > 5000
+	disabled 0
+}
+
+# ==========================================
+# Map Roaming / Random Walk Configuration
+# ==========================================
+# ==========================================
+# Auto Potion (HP < 50%)
+# Uses item IDs so it works with Korean/Thai item names
+# 569 Novice Potion, 501 Red, 502 Orange, 503 Yellow, 504 White
+# ==========================================
+useSelf_item 569,501,502,503,504 {
+	hp < 50%
+	notWhileSitting 0
+	notInTown 0
+	timeout 0.5
+	disabled 0
+}
+
+# Emergency: HP < 25% -> drink strongest potion first
+useSelf_item 504,503,502,501,569 {
+	hp < 25%
+	timeout 0.3
+	disabled 0
+}
+
+# ==========================================
+# Blue Potion (505): restore SP before it runs out
+useSelf_item 505, 11518, Blue Potion, Novice Blue Potion {
+	sp < 25%
+	timeout 3
+	disabled 0
+}
+
+# ==========================================
+# Auto ASPD Potion (only when no ASPD potion buff is active)
+# 645 Concentration Potion (all jobs)
+# ==========================================
+useSelf_item 645 {
+	whenStatusInactive Concentration Potion, Awakening Potion, Berserk Potion
+	onAction attack
+	inLockOnly 1
+	notInTown 1
+	timeout 5
+	disabled 0
+}
+
+# 656 Awakening Potion (Base Lv 40+, not Novice/Acolyte/Priest/Monk/Archer?)
+# Set disabled 0 if your job/level can use it
+useSelf_item 656 {
+	whenStatusInactive Concentration Potion, Awakening Potion, Berserk Potion
+	onAction attack
+	inLockOnly 1
+	notInTown 1
+	timeout 5
+	disabled 1
+}
+
+# 657 Berserk Potion (Base Lv 85+, specific jobs)
+# Set disabled 0 if your job/level can use it
+useSelf_item 657 {
+	whenStatusInactive Concentration Potion, Awakening Potion, Berserk Potion
+	onAction attack
+	inLockOnly 1
+	notInTown 1
+	timeout 5
+	disabled 1
+}
+
+route_randomWalk 1
+route_randomWalk_inTown 0
+route_randomWalk_maxRouteTime 35
+route_avoidWalls 0
+route_randomWalk_upToLockMap 0
+route_maxWarpFee
+route_maxNpcTries 5
+route_teleport 0
+route_teleport_minDistance 150
+route_teleport_maxTries 8
+route_teleport_notInMaps
+route_step 10
+
+teleportAuto_hp 25
+teleportAuto_sp 0
+teleportAuto_idle 0
+teleportAuto_portal 0
+teleportAuto_search 0
+teleportAuto_minAggressives 3
+teleportAuto_minAggressivesInLock 3
+teleportAuto_onlyWhenSafe 0
+teleportAuto_maxDmg 0
+teleportAuto_maxDmgInLock 0
+teleportAuto_deadly 0
+teleportAuto_useSkill 0
+teleportAuto_useChatCommand
+teleportAuto_allPlayers 0
+teleportAuto_atkCount 0
+teleportAuto_atkMiss 0
+teleportAuto_unstuck 1
+teleportAuto_lostTarget 0
+teleportAuto_dropTarget 0
+teleportAuto_dropTargetKS 0
+teleportAuto_totalDmg 0
+teleportAuto_totalDmgInLock 0
+teleportAuto_equip_leftAccessory
+teleportAuto_equip_rightAccessory
+teleportAuto_lostHomunculus
+
+sitAuto_hp_lower 20
+sitAuto_hp_upper 60
+sitAuto_sp_lower 0
+sitAuto_sp_upper 0
+sitAuto_follow 0
+sitAuto_over_50 0
+sitAuto_idle 0
+sitAuto_look
+sitAuto_look_from_wall
+
+verbose 1
+debug 0
+debugPacket_unparsed 0
+debugPacket_received 1
+debugPacket_ro_sent 0
+debugPacket_sent 1
+debugPacket_exclude
+debugPacket_include
+debugPacket_include_dumpMethod
+debugDomains
+macro_orphans terminate
+
+# Write console output to logs/console.txt (Log.pm only logs when this is on)
+logConsole 1
+logAppendUsername 0
+
+attackSkillSlot TF_STEAL {
+	lvl 10
+	maxUses 1
+	disabled 1
+}
