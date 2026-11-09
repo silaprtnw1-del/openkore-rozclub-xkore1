@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import time
 from typing import Any, Final
 
@@ -275,6 +276,33 @@ class Bot:
             log.exception('%s: could not launch taskkill for pid %d', self.name, pid_num)
             return False
         return True
+
+
+def run_roz(root: str, args: list[str], timeout: float = 180.0) -> tuple[int, str]:
+    """Run `roz.ps1 <args>` hidden and return (exit code, combined stdout/stderr).
+
+    `new` and `remove` are quick and must not freeze the Tk thread: callers run
+    this from a worker thread and hand the result back with App._call_soon.
+    Output goes to a temp file, not a pipe, so it also works when the process
+    creating the pipe is restricted (and never deadlocks on a full pipe).
+    """
+    ps1 = os.path.join(root, 'scripts', 'roz.ps1')
+    if not os.path.isfile(ps1):
+        return 1, f'roz.ps1 not found: {ps1}'
+    cmd = ['powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps1, *args]
+    try:
+        with tempfile.TemporaryFile() as out:
+            p = subprocess.run(cmd, cwd=root, stdout=out, stderr=subprocess.STDOUT,
+                               timeout=timeout, creationflags=CREATE_NO_WINDOW)
+            out.seek(0)
+            text = out.read().decode('utf-8', errors='replace')
+    except subprocess.TimeoutExpired:
+        log.error('roz.ps1 %s timed out after %.0fs', ' '.join(args), timeout)
+        return 1, f'คำสั่ง roz.ps1 ใช้เวลานานเกิน {timeout:.0f} วินาที'
+    except OSError as e:
+        log.exception('could not run roz.ps1 %s', ' '.join(args))
+        return 1, str(e)
+    return p.returncode, text.strip()
 
 
 def launch_roz_start(root: str, names: list[str], console_style: str) -> bool:

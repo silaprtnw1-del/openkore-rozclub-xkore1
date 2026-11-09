@@ -1,5 +1,5 @@
 [ROZCLUB_XKore1]
-ip 31.97.223.129
+ip 15.235.236.242
 port 6900
 version 55
 master_version 1

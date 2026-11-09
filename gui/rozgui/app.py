@@ -5,6 +5,7 @@ import collections
 import functools
 import json
 import os
+import re
 import subprocess
 import queue
 import shutil
@@ -15,7 +16,7 @@ import tkinter.font as tkfont
 from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Callable, Final
 
-from .bot import Bot, LogEntry, launch_roz_start, load_registry
+from .bot import Bot, LogEntry, launch_roz_start, load_registry, run_roz
 from .errlog import log
 from .monctl import load as monctl_load
 from .kconfig import Block, KConfig
@@ -233,6 +234,280 @@ class BotCard(tk.Frame):
             self.sub.configure(text=f'{self.bot.role or "bot"} · port {self.bot.port}\n{text}')
 
 
+_NAME_RE: Final[re.Pattern[str]] = re.compile(r'^[a-z0-9_][a-z0-9_-]*$')
+
+
+def roz_error_text(out: str) -> str:
+    """Thai hint for the usual roz.ps1 new/remove failures ('' if unknown)."""
+    low = out.lower()
+    if 'folder already exists' in low:
+        return 'มีโฟลเดอร์โปรไฟล์ชื่อนี้อยู่แล้ว — เปลี่ยนชื่อบอท'
+    if 'already exists' in low:
+        return 'ชื่อบอทนี้มีอยู่แล้ว — เปลี่ยนชื่อ'
+    if 'already used by another instance' in low or 'is already used' in low:
+        return 'Port นี้ถูกใช้อยู่ — เลือกพอร์ตอื่น หรือให้เลือกอัตโนมัติ'
+    if 'needs -follow' in low:
+        return 'Support ต้องเลือกบอทที่จะเดินตาม'
+    if 'is running' in low:
+        return 'บอทตัวนี้ยังรันอยู่ — ปิดบอทก่อนแล้วค่อยลบ'
+    if 'bad name' in low:
+        return 'ชื่อบอทไม่ถูกต้อง — ใช้ a-z, 0-9, _ และ -'
+    return ''
+
+
+class AddBotDialog(tk.Toplevel):
+    """➕ เพิ่มบอท: fills in `roz.ps1 new`, then reloads the sidebar list."""
+
+    def __init__(self, app: App) -> None:
+        super().__init__(app)
+        self.app = app
+        self.title('เพิ่มบอท')
+        self.configure(bg=PANEL)
+        self.transient(app)
+        self.resizable(False, False)
+        self._running = False
+        # (label shown in a combobox, value passed to roz.ps1). For Support the value
+        # must be the CHARACTER name (followTarget), not the instance name.
+        self._chars: list[tuple[str, str]] = []
+        for b in app.bots:
+            st = b.status if b.running else None
+            char = str(st.get('char') or '') if st else ''
+            if not char:                      # offline: last known character from char.json
+                cj = b.read_char()
+                char = str(cj.get('char') or '') if cj else ''
+            label = f'{b.name} — {char}' if char and char != b.name else b.name
+            self._chars.append((label, char or b.name))
+        self._bots: list[tuple[str, str]] = [(f'{b.name} — {b.role or "bot"}', b.name) for b in app.bots]
+
+        body = ttk.Frame(self, style='Panel.TFrame', padding=16)
+        body.pack(fill='both', expand=True)
+        body.columnconfigure(1, weight=1)
+
+        ttk.Label(body, text='ชื่อบอท', style='Panel.TLabel').grid(row=0, column=0, sticky='w', pady=(0, 4))
+        self.name_var = tk.StringVar()
+        self.name_entry = ttk.Entry(body, textvariable=self.name_var, width=36)
+        self.name_entry.grid(row=0, column=1, sticky='ew', pady=(0, 4))
+        ttk.Label(body, text='ใช้ได้เฉพาะ a-z, 0-9, _ และ - · เริ่มด้วยตัวอักษรหรือ _',
+                  style='PanelMuted.TLabel').grid(row=1, column=1, sticky='w')
+
+        mode = ttk.LabelFrame(body, text=' แบบ ', padding=(10, 6))
+        mode.grid(row=2, column=0, columnspan=2, sticky='ew', pady=(12, 4))
+        mode.columnconfigure(1, weight=1)
+        self.mode_var = tk.StringVar(value='clone' if app.bots else 'support')
+        self.rb_clone = ttk.Radiobutton(mode, text='คัดลอกการตั้งค่าจากบอทที่มีอยู่', value='clone',
+                                        variable=self.mode_var, command=self._mode_changed)
+        self.rb_clone.grid(row=0, column=0, sticky='w', pady=2)
+        self.clone_var = tk.StringVar(value=self._bots[0][0] if self._bots else '')
+        self.clone_box = ttk.Combobox(mode, textvariable=self.clone_var, state='readonly',
+                                      values=[lab for lab, _ in self._bots], width=28)
+        self.clone_box.grid(row=0, column=1, sticky='w', padx=(10, 0), pady=2)
+        self.rb_support = ttk.Radiobutton(mode, text='Support — เดินตาม ฮีล และบัฟบอทที่เลือก',
+                                          value='support', variable=self.mode_var, command=self._mode_changed)
+        self.rb_support.grid(row=1, column=0, sticky='w', pady=2)
+        self.follow_var = tk.StringVar(value=self._chars[0][0] if self._chars else '')
+        self.follow_box = ttk.Combobox(mode, textvariable=self.follow_var, state='readonly',
+                                       values=[lab for lab, _ in self._chars], width=28)
+        self.follow_box.grid(row=1, column=1, sticky='w', padx=(10, 0), pady=2)
+        ttk.Label(mode, text='บอทสายตี (farmer) ต้องคัดลอกจากบอทที่มีอยู่ เพราะ roz.ps1 มีแม่แบบแค่สาย Support',
+                  style='PanelMuted.TLabel', wraplength=520, justify='left').grid(
+            row=2, column=0, columnspan=2, sticky='w', pady=(6, 0))
+        if not app.bots:
+            ttk.Label(mode, text='ยังไม่มีบอทให้คัดลอกหรือเดินตาม — ต้องมีบอทอย่างน้อย 1 ตัวก่อน',
+                      style='PanelMuted.TLabel', foreground=WARN, wraplength=520,
+                      justify='left').grid(row=3, column=0, columnspan=2, sticky='w', pady=(6, 0))
+
+        portf = ttk.LabelFrame(body, text=' Port ', padding=(10, 6))
+        portf.grid(row=3, column=0, columnspan=2, sticky='ew', pady=4)
+        self.port_auto = tk.IntVar(value=1)
+        self.rb_auto = ttk.Radiobutton(portf, text='เลือกให้อัตโนมัติ', value=1,
+                                       variable=self.port_auto, command=self._port_changed)
+        self.rb_auto.grid(row=0, column=0, sticky='w')
+        self.rb_manual = ttk.Radiobutton(portf, text='กำหนดเอง', value=0,
+                                         variable=self.port_auto, command=self._port_changed)
+        self.rb_manual.grid(row=0, column=1, sticky='w', padx=(18, 0))
+        self.port_var = tk.StringVar(value=str(self._next_port()))
+        self.port_spin = ttk.Spinbox(portf, from_=1024, to=65535, increment=1,
+                                     textvariable=self.port_var, width=8, command=self._update_preview)
+        self.port_spin.grid(row=0, column=2, sticky='w', padx=(8, 0))
+        self.port_spin.configure(state='disabled')
+
+        self.preview = ttk.Label(body, text='', style='PanelMuted.TLabel', font=App.F_MONO,
+                                 wraplength=560, justify='left')
+        self.preview.grid(row=4, column=0, columnspan=2, sticky='w', pady=(6, 2))
+
+        outf = ttk.Frame(body, style='Panel.TFrame')
+        outf.grid(row=5, column=0, columnspan=2, sticky='nsew', pady=(6, 2))
+        outf.columnconfigure(0, weight=1)
+        self.out = tk.Text(outf, height=8, width=64, bg=BG, fg=TEXT, relief='flat',
+                           font=App.F_MONO, padx=8, pady=6, state='disabled', wrap='word')
+        vsb = ttk.Scrollbar(outf, orient='vertical', command=self.out.yview)
+        self.out.configure(yscrollcommand=vsb.set)
+        vsb.grid(row=0, column=1, sticky='ns')
+        self.out.grid(row=0, column=0, sticky='nsew')
+
+        self.status_lbl = ttk.Label(body, text='', style='PanelMuted.TLabel', foreground=MUTED,
+                                    wraplength=560, justify='left')
+        self.status_lbl.grid(row=6, column=0, columnspan=2, sticky='w', pady=(4, 0))
+
+        btns = ttk.Frame(body, style='Panel.TFrame')
+        btns.grid(row=7, column=0, columnspan=2, sticky='e', pady=(10, 0))
+        self.btn_cancel = ttk.Button(btns, text='ยกเลิก', command=self._cancel)
+        self.btn_cancel.pack(side='right', padx=(6, 0))
+        self.btn_ok = ttk.Button(btns, text='สร้างบอท', style='Accent.TButton', command=self._submit)
+        self.btn_ok.pack(side='right')
+
+        self.name_var.trace_add('write', lambda *a: self._update_preview())
+        self.clone_var.trace_add('write', lambda *a: self._update_preview())
+        self.follow_var.trace_add('write', lambda *a: self._update_preview())
+        self.port_var.trace_add('write', lambda *a: self._update_preview())
+        self.name_entry.bind('<Return>', lambda e: self._submit())
+        self.bind('<Escape>', lambda e: self._cancel())
+        self.wm_protocol('WM_DELETE_WINDOW', self._cancel)
+        self._mode_changed()
+        self._update_preview()
+        self.update_idletasks()
+        x = app.winfo_rootx() + max(0, (app.winfo_width() - self.winfo_width()) // 2)
+        y = app.winfo_rooty() + max(0, (app.winfo_height() - self.winfo_height()) // 3)
+        self.geometry(f'+{x}+{y}')
+        self.grab_set()
+        self.name_entry.focus_set()
+
+    # ------------------------------------------------------------------ form
+    def _next_port(self) -> int:
+        used = {b.port for b in self.app.bots}
+        port = max(used, default=1023) + 1
+        while port in used:
+            port += 1
+        return port
+
+    @staticmethod
+    def _pick(choices: list[tuple[str, str]], label: str) -> str:
+        return next((value for lab, value in choices if lab == label), '')
+
+    def _update_preview(self) -> None:
+        if not hasattr(self, 'preview'):
+            return
+        name = self.name_var.get().strip() or '<ชื่อ>'
+        if self.mode_var.get() == 'clone':
+            src = self._pick(self._bots, self.clone_var.get()) or '<บอทต้นแบบ>'
+            args = f'new {name} -CloneFrom {src}'
+        else:
+            fol = self._pick(self._chars, self.follow_var.get()) or '<บอทที่จะเดินตาม>'
+            args = f'new {name} -Follow {fol}'
+        if not self.port_auto.get():
+            args += f' -Port {self.port_var.get().strip() or "<port>"}'
+        self.preview.configure(text=f'คำสั่ง:  roz.ps1 {args}')
+
+    def _mode_changed(self) -> None:
+        clone = self.mode_var.get() == 'clone'
+        self.clone_box.configure(state='readonly' if clone else 'disabled')
+        self.follow_box.configure(state='disabled' if clone else 'readonly')
+        self._update_preview()
+
+    def _port_changed(self) -> None:
+        self.port_spin.configure(state='disabled' if self.port_auto.get() else 'normal')
+        self._update_preview()
+
+    def _args(self) -> list[str]:
+        name = self.name_var.get().strip()
+        if not name:
+            raise ValueError('ใส่ชื่อบอท')
+        if not _NAME_RE.match(name):
+            raise ValueError('ชื่อบอทใช้ได้เฉพาะ a-z, 0-9, _ และ - (เริ่มด้วยตัวอักษรหรือ _)')
+        if any(b.name.lower() == name.lower() for b in self.app.bots):
+            raise ValueError(f'มีบอทชื่อ {name} อยู่แล้ว')
+        args = ['new', name]
+        if self.mode_var.get() == 'clone':
+            src = self._pick(self._bots, self.clone_var.get())
+            if not src:
+                raise ValueError('เลือกบอทที่จะคัดลอกการตั้งค่า')
+            args += ['-CloneFrom', src]
+        else:
+            fol = self._pick(self._chars, self.follow_var.get())
+            if not fol:
+                raise ValueError('เลือกบอทที่จะเดินตาม')
+            args += ['-Follow', fol]
+        if not self.port_auto.get():
+            raw = self.port_var.get().strip()
+            if not raw.isdigit():
+                raise ValueError('Port ต้องเป็นตัวเลข 1024–65535')
+            port = int(raw)
+            if not 1024 <= port <= 65535:
+                raise ValueError('Port ต้องอยู่ระหว่าง 1024–65535')
+            if any(b.port == port for b in self.app.bots):
+                raise ValueError(f'Port {port} ถูกใช้โดยบอทอื่นแล้ว')
+            args += ['-Port', str(port)]
+        return args
+
+    # ------------------------------------------------------------------ run
+    def _submit(self) -> None:
+        if self._running:
+            return
+        try:
+            args = self._args()
+        except ValueError as e:
+            self._status(str(e), BAD)
+            return
+        name = args[1]
+        self._running = True
+        self._inputs(False)
+        self._status('กำลังสร้างบอท... (roz.ps1 new)', MUTED)
+        self._append(f'> roz.ps1 {" ".join(args)}\n')
+
+        def work() -> None:
+            code, out = run_roz(ROOT_DIR, args)
+            self.app._call_soon(lambda: self._done(name, code, out))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _done(self, name: str, code: int, out: str) -> None:
+        self._running = False
+        self._append((out or '(ไม่มีข้อความจาก roz.ps1)') + '\n')
+        if code == 0:
+            self._status(f'สร้างบอท {name} แล้ว — กด ▶ เริ่มบอท ที่แถบซ้ายเพื่อล็อกอิน', OK)
+            self.grab_release()
+            self.app.reload_registry(select=name)
+            self.btn_cancel.pack_forget()
+            self.btn_ok.configure(text='ปิด', command=self._close)
+            self.btn_ok.state(['!disabled'])
+        else:
+            hint = roz_error_text(out)
+            self._status(f'สร้างไม่สำเร็จ (exit {code})' + (f'\n{hint}' if hint else ''), BAD)
+            self._inputs(True)
+
+    def _inputs(self, enabled: bool) -> None:
+        for w in (self.name_entry, self.rb_clone, self.rb_support, self.rb_auto, self.rb_manual):
+            w.configure(state='normal' if enabled else 'disabled')
+        if enabled:
+            self._mode_changed()
+            self._port_changed()
+            self.btn_ok.state(['!disabled'])
+            self.btn_cancel.state(['!disabled'])
+        else:
+            for w in (self.clone_box, self.follow_box, self.port_spin):
+                w.configure(state='disabled')
+            self.btn_ok.state(['disabled'])
+            self.btn_cancel.state(['disabled'])
+
+    def _status(self, text: str, color: str) -> None:
+        self.status_lbl.configure(text=text, foreground=color)
+
+    def _append(self, text: str) -> None:
+        self.out.configure(state='normal')
+        self.out.insert('end', text)
+        self.out.see('end')
+        self.out.configure(state='disabled')
+
+    def _close(self) -> None:
+        if self._running:
+            return
+        if self.app.add_dialog is self:
+            self.app.add_dialog = None
+        self.destroy()
+
+    def _cancel(self) -> None:
+        self._close()
+
+
 # ======================================================================== app
 class App(tk.Tk):
     # Font tuples, filled in by _fonts() once Tk exists.
@@ -262,6 +537,8 @@ class App(tk.Tk):
         self.feeds: dict[str, collections.deque[tuple[float, str, str]]] = {
             b.name: collections.deque(maxlen=300) for b in self.bots}
         self.pending_start: dict[str, float] = {}
+        self.add_dialog: AddBotDialog | None = None
+        self._removing = False
         self.kc: KConfig | None = None
         self.kc_bot: str | None = None
         self.form_vars: dict[str, tuple[str, Any, tk.Variable]] = {}
@@ -391,6 +668,14 @@ class App(tk.Tk):
             c = BotCard(self.card_box, self, b)
             c.pack(fill='x', pady=1)
             self.cards[b.name] = c
+        manage = tk.Frame(side, bg=PANEL)
+        manage.pack(fill='x', padx=12, pady=(10, 0))
+        manage.columnconfigure(0, weight=1, uniform='m')
+        manage.columnconfigure(1, weight=1, uniform='m')
+        self.btn_add = ttk.Button(manage, text='➕ เพิ่มบอท', command=self.add_bot)
+        self.btn_add.grid(row=0, column=0, sticky='ew', padx=(0, 2))
+        self.btn_remove = ttk.Button(manage, text='➖ ลบบอท', command=self.remove_bot)
+        self.btn_remove.grid(row=0, column=1, sticky='ew', padx=(2, 0))
         bottom = tk.Frame(side, bg=PANEL)
         bottom.pack(side='bottom', fill='x', padx=12, pady=12)
         ttk.Button(bottom, text='▶  เริ่มบอททุกตัว', style='Ok.TButton', command=self.start_all).pack(fill='x', pady=2)
@@ -1408,6 +1693,7 @@ class App(tk.Tk):
         ttk.Label(lf3, style='PanelMuted.TLabel', justify='left', wraplength=900, text=(
             '• โปรแกรมนี้คุยกับบอทผ่านปลั๊กอิน gui_ipc (plugins\\gui_ipc) ซึ่งจะถูกโหลดเมื่อเริ่มบอทผ่านโปรแกรมนี้ หรือ roz.cmd\n'
             '• โปรไฟล์ของบอทแต่ละตัวอยู่ที่ bots\\<ชื่อ>\\ (control, tables, logs) · รายชื่อบอทอยู่ใน instances.json\n'
+            '• ปุ่ม ➕ เพิ่มบอท / ➖ ลบบอท ที่แถบซ้ายเรียก scripts\\roz.ps1 new / remove ให้ทันที (ไม่ต้องปิดโปรแกรม)\n'
             '• ปุ่มเริ่มบอทจะขอสิทธิ์ Administrator (UAC) เพราะเกม Ragnarok.exe ต้องใช้สิทธิ์นี้\n'
             '• ทุกครั้งที่บันทึกการตั้งค่า จะสำรอง config.txt ไว้เป็น config.txt.bak-วันที่-gui (เก็บ 15 ไฟล์ล่าสุด)\n'
             '• การแจ้งเตือนทำงานเฉพาะตอนเปิดโปรแกรมนี้ไว้ (ย่อหน้าต่างไว้ได้)')).pack(anchor='w')
@@ -1424,8 +1710,116 @@ class App(tk.Tk):
         else:
             messagebox.showinfo('ยังไม่มี', 'ยังไม่เคยเริ่มบอทจากโปรแกรมนี้')
 
-    def reload_registry(self) -> None:
-        messagebox.showinfo('โหลดใหม่', 'ปิดแล้วเปิดโปรแกรมใหม่เพื่อโหลดรายชื่อบอทล่าสุด')
+    def reload_registry(self, select: str | None = None) -> None:
+        """Re-read instances.json and rebuild the sidebar (after roz new/remove)."""
+        try:
+            reg = load_registry(ROOT_DIR)
+        except (OSError, ValueError) as e:
+            log.exception('cannot reload instances.json')
+            self.toast(f'โหลดรายชื่อบอทไม่ได้: {e}', 'bad')
+            return
+        instances = [i for i in reg.get('instances', []) if isinstance(i, dict) and i.get('name')]
+        old = self.bot_by_name
+        bots: list[Bot] = []
+        for inst in instances:
+            name = str(inst['name'])
+            bots.append(old.get(name) or Bot(ROOT_DIR, inst))
+        self.registry = reg
+        self.bots = bots
+        self.bot_by_name = {b.name: b for b in bots}
+        self.feeds = {b.name: self.feeds.get(b.name, collections.deque(maxlen=300)) for b in bots}
+        for name in list(self.pending_start):
+            if name not in self.bot_by_name:
+                del self.pending_start[name]
+        for card in self.cards.values():
+            card.destroy()
+        self.cards = {}
+        for b in self.bots:
+            card = BotCard(self.card_box, self, b)
+            card.pack(fill='x', pady=1)
+            card.refresh(b.name == self.selected)
+            self.cards[b.name] = card
+        if select and select in self.bot_by_name:
+            self.select_bot(select)
+        elif self.selected is not None and self.selected in self.bot_by_name:
+            self.cards[str(self.selected)].refresh(True)
+        elif self.bots:
+            self.select_bot(self.bots[0].name, force=True)
+        else:
+            self.selected = None
+            self._clear_bot_view()
+            self.toast('ไม่มีบอทใน instances.json — กด ➕ เพิ่มบอท', 'warn')
+
+    def add_bot(self) -> None:
+        dlg = self.add_dialog
+        if dlg is not None:
+            try:
+                alive = bool(dlg.winfo_exists())
+            except tk.TclError:
+                alive = False
+            if alive:
+                dlg.lift()
+                dlg.focus_set()
+                return
+        self.add_dialog = AddBotDialog(self)
+
+    def remove_bot(self) -> None:
+        b = self.cur_bot()
+        if not b:
+            self.toast('ไม่มีบอทให้ลบ', 'warn')
+            return
+        if self._removing:
+            return
+        if b.running:
+            messagebox.showwarning('ลบบอท', f'{b.name} กำลังรันอยู่ — ปิดบอท (⏹ ปิดบอท หรือ ✖ บังคับปิด) ก่อนแล้วค่อยลบ')
+            return
+        if self.kc_bot == b.name and self._config_dirty():
+            if not messagebox.askyesno('ยังไม่ได้บันทึก', f'ทิ้งการแก้ไขที่ยังไม่ได้บันทึกของ {b.name}?'):
+                return
+        ans = messagebox.askyesnocancel(
+            'ลบบอท',
+            f'เอา {b.name} ออกจาก instances.json?\n\n'
+            'Yes = ลบโฟลเดอร์โปรไฟล์ด้วย\nNo = เก็บโฟลเดอร์ไว้\nCancel = ยกเลิก')
+        if ans is None:
+            return
+        args = ['remove', b.name] + (['-DeleteFiles'] if ans else [])
+        self._removing = True
+        self.btn_remove.state(['disabled'])
+        self.toast(f'กำลังลบ {b.name}...', 'muted')
+
+        def work() -> None:
+            code, out = run_roz(ROOT_DIR, args)
+            self._call_soon(lambda: self._removed(b.name, bool(ans), code, out))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _removed(self, name: str, deleted: bool, code: int, out: str) -> None:
+        self._removing = False
+        self.btn_remove.state(['!disabled'])
+        if code != 0:
+            log.warning('roz remove %s failed: %s', name, out)
+            hint = roz_error_text(out)
+            messagebox.showerror('ลบบอทไม่สำเร็จ', (hint + '\n\n' if hint else '') + out)
+            return
+        self.reload_registry()
+        self.toast(f'ลบ {name} แล้ว', 'ok')
+        messagebox.showinfo('ลบบอท', f'นำ {name} ออกจากรายชื่อแล้ว'
+                            + (' และลบโฟลเดอร์โปรไฟล์' if deleted else ' (เก็บโฟลเดอร์ไว้)'))
+
+    def _clear_bot_view(self) -> None:
+        """No bot left in the registry: reset the overview/config panels."""
+        self.kc = None
+        self.kc_bot = None
+        self.c_title.configure(text='ยังไม่มีบอท')
+        self.c_path.configure(text='')
+        self.c_dirty.configure(text='')
+        self.o_name.configure(text='-')
+        self.o_state.configure(text='', bg=PANEL2, fg=TEXT)
+        self.o_where.configure(text='')
+        self.o_sub.configure(text='กด ➕ เพิ่มบอท ที่แถบซ้ายเพื่อสร้างบอทตัวแรก')
+        for bar in (self.b_hp, self.b_sp, self.b_exp, self.b_job, self.b_w):
+            bar.set(0, 0)
+        for v in self.tiles.values():
+            v.configure(text='-', fg=TEXT)
 
     # ------------------------------------------------------------ selection
     def select_bot(self, name: str, force: bool = False) -> None:
