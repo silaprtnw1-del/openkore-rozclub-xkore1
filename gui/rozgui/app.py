@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import queue
+import shutil
 import threading
 import time
 import tkinter as tk
@@ -49,7 +50,11 @@ POLL_MS: Final[int] = 1000
 PHASE: Final[int] = 3
 GUI_DIR: Final[str] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT_DIR: str = os.path.dirname(GUI_DIR)
-SETTINGS_PATH: str = os.path.join(GUI_DIR, 'settings.json')
+# Settings hold the Telegram token / Discord webhook: keep them outside the project
+# folder (which sits under OneDrive and in git), in the user's own profile.
+SETTINGS_DIR: Final[str] = os.path.join(os.environ.get('APPDATA') or os.path.expanduser('~'), 'ROZBotControl')
+SETTINGS_PATH: str = os.path.join(SETTINGS_DIR, 'settings.json')
+LEGACY_SETTINGS_PATH: str = os.path.join(GUI_DIR, 'settings.json')   # before 2026-11-10
 
 # ------------------------------------------------------- settings form spec
 # (section, key, label, kind, options, help)
@@ -1239,7 +1244,7 @@ class App(tk.Tk):
         btns.pack(fill='x', padx=18, pady=(12, 0), before=cols)   # keep Save/Test visible without scrolling
         ttk.Button(btns, text='💾 บันทึกการแจ้งเตือน', style='Accent.TButton', command=self.save_notify).pack(side='left', padx=2)
         ttk.Button(btns, text='📨 ส่งข้อความทดสอบ', command=self.test_notify).pack(side='left', padx=2)
-        ttk.Label(btns, text='Token / Webhook เก็บไว้ในเครื่องที่ gui\\settings.json — อย่าแชร์ไฟล์นี้ให้คนอื่น',
+        ttk.Label(btns, text='Token / Webhook เก็บไว้ในเครื่องที่ %APPDATA%\\ROZBotControl\\settings.json (นอกโปรเจกต์) — อย่าแชร์ไฟล์นี้',
                   style='Muted.TLabel').pack(side='right')
 
     def _collect_notify(self) -> dict[str, Any]:
@@ -1478,10 +1483,26 @@ class App(tk.Tk):
         self.after(POLL_MS, self.poll)
 
     # ------------------------------------------------------------ settings
+    @staticmethod
+    def _migrate_settings() -> None:
+        """Move gui/settings.json (old place, inside the project) to SETTINGS_PATH once."""
+        if os.path.exists(SETTINGS_PATH) or not os.path.exists(LEGACY_SETTINGS_PATH):
+            return
+        try:
+            os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+            shutil.move(LEGACY_SETTINGS_PATH, SETTINGS_PATH)
+            log.info('settings moved to %s', SETTINGS_PATH)
+        except OSError as e:
+            log.warning('cannot move %s to %s (%s); reading it in place', LEGACY_SETTINGS_PATH, SETTINGS_PATH, e)
+
     def _load_settings(self) -> dict[str, Any]:
+        self._migrate_settings()
+        # If the move failed, keep using the old file rather than silently starting from defaults.
+        path = LEGACY_SETTINGS_PATH if (not os.path.exists(SETTINGS_PATH)
+                                        and os.path.exists(LEGACY_SETTINGS_PATH)) else SETTINGS_PATH
         s: dict[str, Any] = {}
         try:
-            with open(SETTINGS_PATH, 'r', encoding='utf-8') as f:
+            with open(path, 'r', encoding='utf-8') as f:
                 loaded = json.load(f)
             if isinstance(loaded, dict):
                 s = loaded
@@ -1504,6 +1525,7 @@ class App(tk.Tk):
     def _save_settings(self) -> bool:
         tmp = SETTINGS_PATH + '.tmp'
         try:
+            os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
             with open(tmp, 'w', encoding='utf-8') as f:
                 json.dump(self.settings, f, ensure_ascii=False, indent=2)
             os.replace(tmp, SETTINGS_PATH)
