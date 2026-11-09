@@ -41,8 +41,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
 
-$Script:Multi   = $PSScriptRoot
+$Script:Multi   = $PSScriptRoot                  # scripts\ (this file, templates\, bin\)
 $Script:Root    = Split-Path -Parent $PSScriptRoot
+$Script:BotsDir = 'bots'                         # one profile per bot: bots\<name>\control, tables, logs
 $Script:RegPath = Join-Path $Script:Root 'instances.json'
 $Script:PortEnv = 'ROZ_XKORE_PORT'
 $Script:Utf8    = New-Object System.Text.UTF8Encoding($false)
@@ -84,7 +85,7 @@ function Get-Instance($reg, [string]$name) {
 }
 
 function Get-ProfileDir($inst) {
-    $rel = Get-Prop $inst 'profile' ('instances\' + $inst.name)
+    $rel = Get-Prop $inst 'profile' (Join-Path $Script:BotsDir $inst.name)
     return [IO.Path]::GetFullPath((Join-Path $Script:Root $rel))
 }
 
@@ -97,7 +98,7 @@ function Get-Paths($reg) {
         GameExe    = Join-Path $game (Get-Prop $reg 'gameExe' 'Ragnarok.exe')
         Perl       = Join-Path $Script:Root 'runtime\perl-roz.exe'
         Injector   = Join-Path $Script:Root 'runtime\roz-xkore-launcher.exe'
-        Dll        = Join-Path $Script:Root (Get-Prop $reg 'dll' 'multi\bin\NetRedirect-ROZ-IAT-v4.dll')
+        Dll        = Join-Path $Script:Root (Get-Prop $reg 'dll' 'scripts\bin\NetRedirect-ROZ-IAT-v4.dll')
         Strawberry = Get-Prop $reg 'strawberryRoot' 'C:\Strawberry'
         ExtraPath  = @(Get-Prop $reg 'extraPath' @())
     }
@@ -161,7 +162,7 @@ function Show-List($reg) {
             Port    = $i.port
             Role    = Get-Prop $i 'role' '-'
             Follow  = Get-Prop $i 'follow' '-'
-            Profile = Get-Prop $i 'profile' ('instances\' + $i.name)
+            Profile = Get-Prop $i 'profile' (Join-Path $Script:BotsDir $i.name)
             Config  = $(if (Test-Path -LiteralPath (Join-Path $dir 'control\config.txt')) { 'ok' } else { 'MISSING' })
         }
     }
@@ -359,7 +360,7 @@ function New-Instance($reg, $paths, [string]$name, [string]$role, [string]$follo
     }
     if ($port -lt 1024 -or $port -gt 65535) { throw "port $port is outside 1024-65535" }
 
-    $rel = 'instances\' + $name
+    $rel = Join-Path $Script:BotsDir $name
     $dir = [IO.Path]::GetFullPath((Join-Path $Script:Root $rel))
     if ((Test-Path -LiteralPath $dir) -and (@(Get-ChildItem -LiteralPath $dir -Force).Count -gt 0)) { throw "folder already exists and is not empty: $dir" }
 
@@ -434,7 +435,7 @@ function Remove-Instance($reg, [string]$name, [bool]$deleteFiles) {
     Save-Registry $reg
     Write-Host "Removed '$($inst.name)' from instances.json."
     if ($deleteFiles) {
-        $instancesRoot = [IO.Path]::GetFullPath((Join-Path $Script:Root 'instances')) + '\'
+        $instancesRoot = [IO.Path]::GetFullPath((Join-Path $Script:Root $Script:BotsDir)) + '\'
         if (-not $dir.StartsWith($instancesRoot, [StringComparison]::OrdinalIgnoreCase)) {
             Write-Warn2 "profile folder $dir is not under $instancesRoot - not deleting it."
         } elseif (Test-Path -LiteralPath $dir) {
@@ -528,7 +529,7 @@ roz - ROZCLUB multi-instance manager (one OpenKore + one game window per instanc
   roz new <name> -CloneFrom <inst>   new instance copied from another one (e.g. a second farmer)
       -Port N                          choose the port yourself
   roz remove <name> [-DeleteFiles]   take an instance out of instances.json (and its folder, if asked)
-  roz build                          rebuild multi\bin\NetRedirect-ROZ-IAT-v4.dll from the OpenKore sources
+  roz build                          rebuild scripts\bin\NetRedirect-ROZ-IAT-v4.dll from the OpenKore sources
 '@
 }
 

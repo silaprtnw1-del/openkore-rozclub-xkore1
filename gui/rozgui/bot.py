@@ -135,7 +135,7 @@ class Bot:
         self.port = int(inst.get('port', 0))
         self.role = inst.get('role', '')
         self.follow = inst.get('follow', '')
-        self.profile = os.path.normpath(os.path.join(root, inst.get('profile') or ('instances\\' + self.name)))
+        self.profile = os.path.normpath(os.path.join(root, inst.get('profile') or os.path.join('bots', self.name)))
         self.logs = os.path.join(self.profile, 'logs')
         self.control = os.path.join(self.profile, 'control')
         self.config_path = os.path.join(self.control, 'config.txt')
@@ -282,7 +282,7 @@ def launch_roz_start(root: str, names: list[str], console_style: str) -> bool:
     if console_style not in ('Normal', 'Minimized', 'Hidden'):
         log.error('invalid console style %r, using Minimized', console_style)
         console_style = 'Minimized'
-    ps1 = os.path.join(root, 'multi', 'roz.ps1')
+    ps1 = os.path.join(root, 'scripts', 'roz.ps1')
     if not os.path.isfile(ps1):
         log.error('roz.ps1 not found: %s', ps1)
         return False

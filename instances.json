@@ -2,24 +2,24 @@
     "openkoreRoot":  "C:\\Users\\silap\\openkore",
     "gameRoot":  "D:\\ROZCLUB",
     "gameExe":  "Ragnarok.exe",
-    "dll":  "multi\\bin\\NetRedirect-ROZ-IAT-v4.dll",
+    "dll":  "scripts\\bin\\NetRedirect-ROZ-IAT-v4.dll",
     "strawberryRoot":  "C:\\Strawberry",
     "extraPath":  [
                       "C:\\Users\\silap\\miniconda3"
                   ],
-    "baseProfile":  ".",
+    "baseProfile":  "bots\\potato7",
     "startDelaySeconds":  6,
     "instances":  [
                       {
                           "name":  "potato7",
                           "port":  2351,
-                          "profile":  ".",
+                          "profile":  "bots\\potato7",
                           "role":  "farmer"
                       },
                       {
                           "name":  "kiminoto",
                           "port":  2352,
-                          "profile":  "instances\\kiminoto",
+                          "profile":  "bots\\kiminoto",
                           "role":  "support",
                           "follow":  "potato7",
                           "created":  "2026-11-06"

@@ -1407,7 +1407,7 @@ class App(tk.Tk):
         lf3.pack(fill='x', padx=18, pady=6)
         ttk.Label(lf3, style='PanelMuted.TLabel', justify='left', wraplength=900, text=(
             '• โปรแกรมนี้คุยกับบอทผ่านปลั๊กอิน gui_ipc (plugins\\gui_ipc) ซึ่งจะถูกโหลดเมื่อเริ่มบอทผ่านโปรแกรมนี้ หรือ roz.cmd\n'
-            '• บอทที่เปิดด้วย Start-ROZCLUB-XKore1.cmd แบบเก่าจะไม่มีปลั๊กอินนี้ → โปรแกรมจะเห็นเป็น "ปิดอยู่"\n'
+            '• โปรไฟล์ของบอทแต่ละตัวอยู่ที่ bots\\<ชื่อ>\\ (control, tables, logs) · รายชื่อบอทอยู่ใน instances.json\n'
             '• ปุ่มเริ่มบอทจะขอสิทธิ์ Administrator (UAC) เพราะเกม Ragnarok.exe ต้องใช้สิทธิ์นี้\n'
             '• ทุกครั้งที่บันทึกการตั้งค่า จะสำรอง config.txt ไว้เป็น config.txt.bak-วันที่-gui (เก็บ 15 ไฟล์ล่าสุด)\n'
             '• การแจ้งเตือนทำงานเฉพาะตอนเปิดโปรแกรมนี้ไว้ (ย่อหน้าต่างไว้ได้)')).pack(anchor='w')
