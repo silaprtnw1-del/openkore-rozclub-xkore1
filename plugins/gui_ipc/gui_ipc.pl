@@ -262,6 +262,8 @@ sub write_status {
         level => 0, level_job => 0, zeny => 0, weight => 0, weight_max => 0,
         dead => 0, sit => 0, x => 0, y => 0,
         players => 0, monsters => 0, gms => [], party_members => [],
+        # characters of the account as "slot:name" (known from the character screen on)
+        chars => [ map { "$_:$chars[$_]{name}" } grep { $chars[$_] && defined $chars[$_]{name} } 0 .. $#chars ],
     );
 
     if ($char) {

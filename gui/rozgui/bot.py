@@ -258,22 +258,61 @@ class Bot:
     def start(self, console_style: str = 'Minimized') -> bool:
         return launch_roz_start(self.root, [self.name], console_style)
 
-    def force_kill(self) -> bool:
-        """Kill OpenKore (needs Administrator: the bot runs elevated)."""
+    def account_chars(self) -> list[str]:
+        """Characters of the account as ["0:potato7", ...] (gui_ipc plugin, from the character screen on)."""
+        raw = (self.status or {}).get('chars') or []
+        return [str(c) for c in raw if isinstance(c, str) and ':' in c]
+
+    # ------------------------------------------------------------- game pid
+    def cached_game_pid(self) -> int:
+        """pid written by roz.ps1 when it launched this bot's game client."""
+        try:
+            with open(os.path.join(self.logs, 'game.pid'), 'r', encoding='utf-8') as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return 0
+
+    def remember_game_pid(self, pid: int) -> None:
+        if pid <= 0:
+            return
+        try:
+            os.makedirs(self.logs, exist_ok=True)
+            tmp = os.path.join(self.logs, 'game.pid.tmp')
+            with open(tmp, 'w', encoding='utf-8') as f:
+                f.write(str(pid))
+            os.replace(tmp, os.path.join(self.logs, 'game.pid'))
+        except OSError as e:
+            log.warning('%s: cannot cache game pid: %s', self.name, e)
+
+    def discover_game_pid(self) -> int:
+        """Ask roz.ps1 for the game client currently bridged to this instance."""
+        code, out = run_roz(self.root, ['gamepid', self.name], timeout=30)
+        if code != 0:
+            return 0
+        for token in reversed(out.split()):
+            if token.isdigit():
+                return int(token)
+        return 0
+
+    def force_kill(self, game_pid: int = 0) -> bool:
+        """Kill OpenKore, and the game client too when `game_pid` > 0, in one elevated
+        taskkill (one UAC prompt; both run elevated). The caller checks that `game_pid`
+        really is this bot's game window."""
         pid = (self.status or {}).get('pid')
         try:
             pid_num = int(pid) if pid else 0
         except (TypeError, ValueError):
             log.error('%s: invalid pid in status.json: %r', self.name, pid)
             return False
-        if pid_num <= 0:
+        pids = [p for p in (pid_num, game_pid) if p > 0]
+        if not pids:
             return False
-        cmd = ("Start-Process -FilePath taskkill.exe -ArgumentList '/PID','%d','/F' "
-               "-Verb RunAs -WindowStyle Hidden" % pid_num)
+        args = ','.join(f"'/PID','{p}'" for p in pids)
+        cmd = f"Start-Process -FilePath taskkill.exe -ArgumentList {args},'/F' -Verb RunAs -WindowStyle Hidden"
         try:
             subprocess.Popen(['powershell.exe', '-NoProfile', '-Command', cmd], creationflags=CREATE_NO_WINDOW)
         except OSError:
-            log.exception('%s: could not launch taskkill for pid %d', self.name, pid_num)
+            log.exception('%s: could not launch taskkill for pids %s', self.name, pids)
             return False
         return True
 

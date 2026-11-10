@@ -17,7 +17,9 @@ from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Callable, Final
 
 from .bot import Bot, LogEntry, launch_roz_start, load_registry, run_roz
+from . import relogin
 from .errlog import log
+from .logintab import AutoLoginTab
 from .monctl import load as monctl_load
 from .kconfig import Block, KConfig
 from .notify import (DEFAULTS as NOTIFY_DEFAULTS, EVENT_TYPES, Notifier, Rules, describe_error, summary_line,
@@ -47,6 +49,8 @@ C_HP, C_SP, C_EXP, C_JOB, C_W = '#e5484d', '#3e8bff', '#f5b942', '#a36bff', '#3e
 STATE_COLORS: Final[dict[str, str]] = {'ok': OK, 'warn': WARN, 'bad': BAD, 'off': '#5b6273'}
 
 POLL_MS: Final[int] = 1000
+# After "start bot": give up waiting for the game window this long past boot_delay.
+STARTUP_LOGIN_GIVEUP_SECONDS: Final[float] = 120.0
 # Delivered in phases. 1 = dashboard + control + log, 2 = + notifications, 3 = + settings editor.
 PHASE: Final[int] = 3
 GUI_DIR: Final[str] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -539,6 +543,20 @@ class App(tk.Tk):
         self.pending_start: dict[str, float] = {}
         self.add_dialog: AddBotDialog | None = None
         self._removing = False
+        # auto login / recovery state (see _maybe_recover)
+        self._offline_since: dict[str, float] = {}
+        self._recovery_active: str | None = None
+        self._recovery_attempts: dict[str, int] = {}
+        self._last_recovery: dict[str, float] = {}
+        self._recovery_stopped: set[str] = set()
+        self._login_episode: set[str] = set()
+        self._login_testing: set[str] = set()
+        self._pid_checked: set[str] = set()
+        self._pid_retry: dict[str, float] = {}
+        self._warned_no_game: set[str] = set()
+        # login right after "start bot" (see _maybe_startup_login)
+        self._startup_login: dict[str, float] = {}     # bot -> when its OpenKore came up
+        self._game_seen: dict[str, float] = {}         # bot -> when its game window was first seen
         self.kc: KConfig | None = None
         self.kc_bot: str | None = None
         self.form_vars: dict[str, tuple[str, Any, tk.Variable]] = {}
@@ -912,10 +930,15 @@ class App(tk.Tk):
         b = self.cur_bot()
         if not b or not b.status:
             return
-        if messagebox.askyesno('บังคับปิด', f'บังคับปิด OpenKore ของ {b.name} (pid {b.status.get("pid")})?\n'
+        game_pid = b.cached_game_pid()
+        if game_pid and not relogin.find_game_window(game_pid):
+            game_pid = 0            # gone, or the pid now belongs to another program: never kill that
+        game_line = (f'และปิดเกม (pid {game_pid}) ด้วย' if game_pid
+                     else '(ไม่พบหน้าต่างเกมของบอทนี้ — ปิดเฉพาะ OpenKore)')
+        if messagebox.askyesno('บังคับปิด', f'บังคับปิด OpenKore ของ {b.name} (pid {b.status.get("pid")}) {game_line}?\n'
                                              'ใช้เมื่อบอทค้างและกดปิดปกติไม่ได้ — จะมีหน้าต่าง UAC ถาม'):
-            if b.force_kill():
-                self.add_feed(b.name, '✖ สั่งบังคับปิด', 'bad')
+            if b.force_kill(game_pid):
+                self.add_feed(b.name, '✖ สั่งบังคับปิด' + (' (OpenKore + เกม)' if game_pid else ''), 'bad')
             else:
                 self.toast(f'{b.name}: บังคับปิดไม่ได้ — ดูรายละเอียดใน gui\\gui-error.log', 'bad')
 
@@ -930,7 +953,17 @@ class App(tk.Tk):
             return
         if b.running:
             del self.pending_start[b.name]
-            self.add_feed(b.name, '✅ OpenKore เปิดแล้ว — ล็อกอินในหน้าต่างเกมได้เลย', 'ok')
+            s = relogin.load_settings(b.name)
+            if s.enabled and s.has_credentials() and relogin.is_admin():
+                self._startup_login[b.name] = time.time()
+                self._game_seen.pop(b.name, None)
+                self.add_feed(b.name, f'✅ OpenKore เปิดแล้ว — จะล็อกอินให้อัตโนมัติเมื่อเกมโหลดเสร็จ '
+                                      f'(รอ {s.boot_delay:g} วินาที)', 'ok')
+            elif s.enabled and s.has_credentials():
+                self.add_feed(b.name, '✅ OpenKore เปิดแล้ว — ล็อกอินอัตโนมัติไม่ได้เพราะ GUI ไม่ได้เปิดแบบ '
+                                      'Administrator (ใช้ Start-GUI-Admin.cmd) — ล็อกอินในเกมเองก่อน', 'warn')
+            else:
+                self.add_feed(b.name, '✅ OpenKore เปิดแล้ว — ล็อกอินในหน้าต่างเกมได้เลย', 'ok')
         elif time.time() - t > 100:
             del self.pending_start[b.name]
             err = self._start_log_errors()
@@ -990,6 +1023,8 @@ class App(tk.Tk):
         self.tkc: KConfig | None = None
         self.cnb.add(self.pickup_tab, text='เก็บไอเทม')
         self.cnb.add(self.move_tab, text='เคลื่อนที่')
+        self.login_tab = AutoLoginTab(self.cnb, self)
+        self.cnb.add(self.login_tab, text='ล็อกอินอัตโนมัติ')
         # The skill tab and the advanced block editor edit the same KConfig: re-read on switch.
         self.cnb.bind('<<NotebookTabChanged>>', lambda e: self._on_config_subtab())
         self.c_basic = Scrollable(self.cnb)
@@ -1132,6 +1167,7 @@ class App(tk.Tk):
             log.warning('cannot read %s: %s', tpath, e)
             self.tkc = None
         self.move_tab.fill(self.kc, self.tkc, char_json)
+        self.login_tab.fill(b)
 
     def _openkore_root(self) -> str:
         return str(self.registry.get('openkoreRoot') or r'C:\Users\silap\openkore')
@@ -1694,6 +1730,8 @@ class App(tk.Tk):
             '• โปรแกรมนี้คุยกับบอทผ่านปลั๊กอิน gui_ipc (plugins\\gui_ipc) ซึ่งจะถูกโหลดเมื่อเริ่มบอทผ่านโปรแกรมนี้ หรือ roz.cmd\n'
             '• โปรไฟล์ของบอทแต่ละตัวอยู่ที่ bots\\<ชื่อ>\\ (control, tables, logs) · รายชื่อบอทอยู่ใน instances.json\n'
             '• ปุ่ม ➕ เพิ่มบอท / ➖ ลบบอท ที่แถบซ้ายเรียก scripts\\roz.ps1 new / remove ให้ทันที (ไม่ต้องปิดโปรแกรม)\n'
+            '• ล็อกอินอัตโนมัติ (แท็บตั้งค่า) ต้องเปิด GUI ด้วย Start-GUI-Admin.cmd และไม่ล็อกจอ/ไม่สลีป\n'
+            '• ล็อกอินอัตโนมัติจะทำงานเมื่อเห็นกล่อง Disconnected/Error ของเกม (กดทดสอบเองได้ตอนอยู่หน้า login)\n'
             '• ปุ่มเริ่มบอทจะขอสิทธิ์ Administrator (UAC) เพราะเกม Ragnarok.exe ต้องใช้สิทธิ์นี้\n'
             '• ทุกครั้งที่บันทึกการตั้งค่า จะสำรอง config.txt ไว้เป็น config.txt.bak-วันที่-gui (เก็บ 15 ไฟล์ล่าสุด)\n'
             '• การแจ้งเตือนทำงานเฉพาะตอนเปิดโปรแกรมนี้ไว้ (ย่อหน้าต่างไว้ได้)')).pack(anchor='w')
@@ -1770,6 +1808,10 @@ class App(tk.Tk):
             return
         if self._removing:
             return
+        if self._recovery_active == b.name:
+            messagebox.showwarning('กำลังล็อกอินอัตโนมัติ',
+                                   f'ระบบกำลังล็อกอิน {b.name} อยู่ — รอให้เสร็จก่อนแล้วค่อยลบ')
+            return
         if b.running:
             messagebox.showwarning('ลบบอท', f'{b.name} กำลังรันอยู่ — ปิดบอท (⏹ ปิดบอท หรือ ✖ บังคับปิด) ก่อนแล้วค่อยลบ')
             return
@@ -1821,6 +1863,193 @@ class App(tk.Tk):
         for v in self.tiles.values():
             v.configure(text='-', fg=TEXT)
 
+    # ----------------------------------------------------------- auto login
+    def reset_recovery(self, name: str) -> None:
+        """Settings were saved: let the next offline episode start from scratch."""
+        self._recovery_attempts.pop(name, None)
+        self._recovery_stopped.discard(name)
+        self._last_recovery.pop(name, None)
+        self._warned_no_game.discard(name)
+        self._login_episode.discard(name)
+
+    def begin_login_test(self, name: str) -> None:
+        self._login_testing.add(name)
+        self._last_recovery[name] = time.time()
+
+    def end_login_test(self, name: str) -> None:
+        self._login_testing.discard(name)
+        self._last_recovery[name] = time.time()
+
+    def _cache_game_pid(self, b: Bot) -> None:
+        """Remember the game pid while the client is bridged (needed after a drop)."""
+        if b.name in self._pid_checked:
+            return
+        pid = b.cached_game_pid()
+        if pid and relogin.has_window(pid):
+            self._pid_checked.add(b.name)
+            self._warned_no_game.discard(b.name)
+            return
+        if not b.running:             # OpenKore must be alive to discover a game pid
+            return
+        if time.time() < self._pid_retry.get(b.name, 0.0):
+            return
+        self._pid_retry[b.name] = time.time() + 10.0     # one PowerShell call at a time
+
+        def work() -> None:
+            found = b.discover_game_pid()
+            self._call_soon(lambda: self._pid_cached(b.name, found))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _pid_cached(self, name: str, pid: int) -> None:
+        if pid:
+            b = self.bot_by_name.get(name)
+            if b is not None:
+                b.remember_game_pid(pid)
+            self._pid_checked.add(name)
+            self._pid_retry.pop(name, None)
+            self._warned_no_game.discard(name)
+        else:
+            self._pid_retry[name] = time.time() + 30.0
+
+    def _maybe_recover(self, b: Bot) -> None:
+        name = b.name
+        if b.online:
+            self._offline_since.pop(name, None)
+            self._recovery_attempts.pop(name, None)
+            self._recovery_stopped.discard(name)
+            self._warned_no_game.discard(name)
+            self._login_episode.discard(name)
+            return
+        if b.status is None:          # never seen this bot online: do not guess
+            return
+        if self._login_testing or name in self.pending_start:
+            return
+        s = relogin.load_settings(name)
+        if not s.enabled or not s.has_credentials():
+            return
+        if self._recovery_active is not None:
+            return
+        if name in self._recovery_stopped or not relogin.is_admin():
+            return
+        since = self._offline_since.setdefault(name, time.time())
+        if time.time() - since < s.offline_seconds:
+            return
+        if time.time() - self._last_recovery.get(name, 0.0) < s.cooldown_seconds:
+            return
+        if self._recovery_attempts.get(name, 0) >= s.retries:
+            self._recovery_stopped.add(name)
+            self.notifier.notify(
+                f'⚠️ [{name}] ล็อกอินอัตโนมัติหยุดหลังลอง {s.retries} ครั้ง — '
+                'ตรวจบัญชี/เกมแล้วกดบันทึกในแท็บล็อกอินอัตโนมัติเพื่อเริ่มใหม่')
+            return
+        if name in self._warned_no_game:
+            return                  # already told the user; _cache_game_pid clears it
+        pid = b.cached_game_pid()
+        if not (pid and relogin.has_window(pid)):
+            pid = b.discover_game_pid()
+            if pid:
+                b.remember_game_pid(pid)
+        if not pid or not relogin.has_window(pid):
+            if name not in self._warned_no_game:
+                self._warned_no_game.add(name)
+                self.add_feed(name, '⚠ ไม่พบหน้าต่างเกมของบอทนี้ — เปิดเกม/ล็อกอินด้วยมือก่อน', 'warn')
+                self.notifier.notify(f'⚠️ [{name}] หลุดและไม่พบหน้าต่างเกม — เปิดเกม/ล็อกอินด้วยมือก่อน')
+            return
+        if not relogin.has_dialog(pid):
+            # Only act on the known Disconnected/Error popup. Typing into a window
+            # that is still in-game (frozen client) would send junk to the game.
+            # State 3 (character select, OpenKore Receive.pm received_characters) is safe:
+            # only arrows/Enter are sent. Once a dialog started an episode, retries at the
+            # login screen are allowed.
+            if int((b.status or {}).get('state', 0)) != 3 and name not in self._login_episode:
+                return
+        else:
+            self._login_episode.add(name)
+        self._start_recovery(b, s, pid)
+
+    def _maybe_startup_login(self, b: Bot) -> None:
+        """After "start bot": once the game window has had boot_delay seconds to reach its
+        login screen, run the same login as recovery. Failures then retry through
+        _maybe_recover (the episode is marked), up to the bot's retry limit."""
+        name = b.name
+        started = self._startup_login.get(name)
+        if started is None:
+            return
+        state = int((b.status or {}).get('state', 0))
+        if b.online or state >= 2 or state == -1 or not b.running:
+            # Logged in by hand / already past the login screen, or OpenKore died: nothing to do.
+            self._startup_login.pop(name, None)
+            self._game_seen.pop(name, None)
+            return
+        if self._recovery_active is not None or self._login_testing:
+            return                                      # one login at a time; try again next poll
+        s = relogin.load_settings(name)
+        if not (s.enabled and s.has_credentials()):
+            self._startup_login.pop(name, None)
+            return
+        now = time.time()
+        if now - started > s.boot_delay + STARTUP_LOGIN_GIVEUP_SECONDS:
+            self._startup_login.pop(name, None)
+            self._game_seen.pop(name, None)
+            self.add_feed(name, '⚠ ไม่พบหน้าต่างเกมหลังเปิดบอท — ล็อกอินเองในเกม', 'warn')
+            return
+        pid = b.cached_game_pid()                       # written by roz.ps1 when it launched the game
+        if not (pid and relogin.has_window(pid)):
+            return                                      # _cache_game_pid looks it up in the background
+        seen = self._game_seen.setdefault(name, now)
+        if now - seen < s.boot_delay:
+            return
+        self._startup_login.pop(name, None)
+        self._game_seen.pop(name, None)
+        self.reset_recovery(name)                       # a fresh start gets the full retry budget
+        self._login_episode.add(name)                   # lets _maybe_recover retry at the login screen
+        self._start_recovery(b, s, pid, reason='เปิดบอท')
+
+    def _start_recovery(self, b: Bot, s: relogin.LoginSettings, pid: int, reason: str = 'หลุด') -> None:
+        name = b.name
+        attempt = self._recovery_attempts.get(name, 0) + 1
+        self._recovery_attempts[name] = attempt
+        self._last_recovery[name] = time.time()
+        self._recovery_active = name
+        self.add_feed(name, f'🔐 {reason} — กำลังล็อกอินอัตโนมัติ (ครั้งที่ {attempt}/{s.retries})', 'info')
+
+        def log_cb(msg: str) -> None:
+            self._call_soon(functools.partial(self.add_feed, name, msg, 'muted'))
+
+        runner = relogin.LoginRunner(
+            name, pid, s, log_cb,
+            lambda: int((b.status or {}).get('state', 0)),
+            get_chars=b.account_chars)
+
+        def work() -> None:
+            try:
+                ok = runner.run(lambda: b.online, lambda: False)
+            except Exception:
+                log.exception('%s: auto login crashed', name)
+                ok = False
+            self._call_soon(lambda: self._recovery_done(name, ok, runner.debug_dir))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _recovery_done(self, name: str, ok: bool, debug_dir: str) -> None:
+        self._recovery_active = None
+        s = relogin.load_settings(name)
+        if ok:
+            self._offline_since.pop(name, None)
+            self._recovery_attempts.pop(name, None)
+            self._recovery_stopped.discard(name)
+            self._warned_no_game.discard(name)
+            self._login_episode.discard(name)
+            self.add_feed(name, '✅ ล็อกอินอัตโนมัติสำเร็จ', 'ok')
+            self.notifier.notify(f'✅ [{name}] ล็อกอินอัตโนมัติสำเร็จ')
+            self.toast(f'{name}: ล็อกอินอัตโนมัติสำเร็จ', 'ok')
+            return
+        attempt = self._recovery_attempts.get(name, 0)
+        if attempt >= s.retries:
+            self._recovery_stopped.add(name)
+        self.add_feed(name, f'❌ ล็อกอินอัตโนมัติไม่สำเร็จ (ครั้งที่ {attempt}/{s.retries}) — ดูภาพที่ {debug_dir}', 'bad')
+        self.notifier.notify(f'❌ [{name}] ล็อกอินอัตโนมัติไม่สำเร็จ (ครั้งที่ {attempt}/{s.retries})')
+        self.toast(f'{name}: ล็อกอินอัตโนมัติไม่สำเร็จ — ดูแท็บล็อกอินอัตโนมัติ', 'bad')
+
     # ------------------------------------------------------------ selection
     def select_bot(self, name: str, force: bool = False) -> None:
         if name == self.selected and not force:
@@ -1861,6 +2090,9 @@ class App(tk.Tk):
                     self.rules.handle_event(b, ev)
                 self.rules.check_status(b)
                 self._check_pending(b)
+                self._cache_game_pid(b)
+                self._maybe_startup_login(b)
+                self._maybe_recover(b)
             self.rules.maybe_report(self.bots)
             cur = self.cur_bot()
             if cur:

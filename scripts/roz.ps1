@@ -223,6 +223,80 @@ function Initialize-OpenKoreEnv($paths) {
     $env:LANG = 'C'
 }
 
+function Write-GamePid([string]$logs, [int]$procId) {
+    if ($procId -gt 0) {
+        [IO.File]::WriteAllText((Join-Path $logs 'game.pid'), "$procId", $Script:Utf8)
+    }
+}
+
+# Launch one game client bridged to this instance's OpenKore port. The client
+# does the account login/character selection, so with -NoWaitBridge we return as
+# soon as the new process exists (the auto-login code types into that window).
+function Start-GameClient($paths, $inst, [bool]$dry, [switch]$NoWaitBridge) {
+    $name = [string]$inst.name
+    $port = [int]$inst.port
+    $dir = Get-ProfileDir $inst
+    $logs = Join-Path $dir 'logs'
+    New-Item -ItemType Directory -Force -Path $logs | Out-Null
+
+    $existing = Get-GamePid $port
+    if ($existing) {
+        Write-Warn2 "[$name] a game client is already bridged to port $port (pid $existing) - not starting another."
+        return
+    }
+
+    $log = Join-Path $logs ('injector-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+    $injArgs = '"{0}" "{1}"' -f $paths.GameExe, $paths.Dll
+    Write-Host "[$name] starting a game client bridged to port $port ..."
+    if ($dry) {
+        Write-Host "  [dry-run] set $($Script:PortEnv)=$port ; `"$($paths.Injector)`" $injArgs"
+        return
+    }
+    $before = @(Get-Process -Name Ragnarok -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    [Environment]::SetEnvironmentVariable($Script:PortEnv, [string]$port, 'Process')
+    try {
+        $p = Start-Process -FilePath $paths.Injector -ArgumentList $injArgs -PassThru -NoNewWindow `
+            -RedirectStandardOutput $log -RedirectStandardError ($log + '.err')
+        $null = $p.Handle
+        $p.WaitForExit()
+        $code = $p.ExitCode
+    } finally {
+        [Environment]::SetEnvironmentVariable($Script:PortEnv, $null, 'Process')
+    }
+    if ($code -ne 0) { throw "[$name] injector failed (exit code $code). See $log" }
+
+    if ($NoWaitBridge) {
+        $newPid = 0
+        $deadline = (Get-Date).AddSeconds(15)
+        while (-not $newPid -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Milliseconds 500
+            $new = @(Get-Process -Name Ragnarok -ErrorAction SilentlyContinue |
+                Where-Object { $_.Id -notin $before } | Sort-Object StartTime | Select-Object -First 1)
+            if ($new.Count -gt 0) { $newPid = [int]$new[0].Id }
+        }
+        if ($newPid) {
+            Write-GamePid $logs $newPid
+            Write-Host "[$name] game window started (pid $newPid) - log in with this character." -ForegroundColor Green
+        } else {
+            Write-Warn2 "[$name] game started but the new Ragnarok.exe process was not found."
+        }
+        return
+    }
+
+    $deadline = (Get-Date).AddSeconds(25)
+    $gamePid = 0
+    while (-not $gamePid -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        $gamePid = Get-GamePid $port
+    }
+    if ($gamePid) {
+        Write-GamePid $logs $gamePid
+        Write-Host "[$name] bridged: game pid $gamePid <-> OpenKore port $port. Log in with this character in the new game window." -ForegroundColor Green
+    } else {
+        Write-Warn2 "[$name] game started but no bridge to port $port was seen within 25 seconds (see $log)."
+    }
+}
+
 function Start-Instance($paths, $inst, [bool]$noGame, [bool]$dry) {
     $name = [string]$inst.name
     $port = [int]$inst.port
@@ -268,36 +342,31 @@ function Start-Instance($paths, $inst, [bool]$noGame, [bool]$dry) {
 
     if ($noGame) { Write-Host "[$name] -NoGame: game client not started."; return }
 
-    $log = Join-Path $logs ('injector-{0}.log' -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
-    $injArgs = '"{0}" "{1}"' -f $paths.GameExe, $paths.Dll
-    Write-Host "[$name] starting a game client bridged to port $port ..."
-    if ($dry) {
-        Write-Host "  [dry-run] set $($Script:PortEnv)=$port ; `"$($paths.Injector)`" $injArgs"
+    Start-GameClient $paths $inst $dry
+}
+
+function Invoke-Game($reg, $paths, [string]$name) {
+    if (-not $name) { throw 'usage: roz game <name>' }
+    $inst = Get-Instance $reg $name
+    $port = [int]$inst.port
+    if (-not (Get-ListenPid $port)) {
+        throw "[$name] OpenKore is not listening on port $port - start the bot first (roz start $name)."
+    }
+    if (-not (Test-Admin)) {
+        Write-Host 'The game client needs Administrator rights; opening an elevated window (UAC prompt)...'
+        $argText = '-NoProfile -ExecutionPolicy Bypass -File "{0}" game "{1}" -Elevated' -f $PSCommandPath, $name
+        if ($Quiet) {
+            $argText += ' -Quiet'
+            Start-Process -FilePath 'powershell.exe' -ArgumentList $argText -Verb RunAs -WindowStyle Hidden | Out-Null
+        } else {
+            Start-Process -FilePath 'powershell.exe' -ArgumentList $argText -Verb RunAs | Out-Null
+        }
         return
     }
-    [Environment]::SetEnvironmentVariable($Script:PortEnv, [string]$port, 'Process')
-    try {
-        $p = Start-Process -FilePath $paths.Injector -ArgumentList $injArgs -PassThru -NoNewWindow `
-            -RedirectStandardOutput $log -RedirectStandardError ($log + '.err')
-        $null = $p.Handle
-        $p.WaitForExit()
-        $code = $p.ExitCode
-    } finally {
-        [Environment]::SetEnvironmentVariable($Script:PortEnv, $null, 'Process')
-    }
-    if ($code -ne 0) { throw "[$name] injector failed (exit code $code). See $log" }
-
-    $deadline = (Get-Date).AddSeconds(25)
-    $gamePid = 0
-    while (-not $gamePid -and (Get-Date) -lt $deadline) {
-        Start-Sleep -Milliseconds 500
-        $gamePid = Get-GamePid $port
-    }
-    if ($gamePid) {
-        Write-Host "[$name] bridged: game pid $gamePid <-> OpenKore port $port. Log in with this character in the new game window." -ForegroundColor Green
-    } else {
-        Write-Warn2 "[$name] game started but no bridge to port $port was seen within 25 seconds (see $log)."
-    }
+    Initialize-OpenKoreEnv $paths
+    Start-GameClient $paths $inst ([bool]$DryRun) -NoWaitBridge
+    Write-Host ''
+    Show-Status (Get-Registry)
 }
 
 function Invoke-Start($reg, $paths, [string[]]$wanted) {
@@ -525,6 +594,8 @@ roz - ROZCLUB multi-instance manager (one OpenKore + one game window per instanc
   roz start <name...|all>            start OpenKore + a bridged game client (asks for Administrator)
       -NoGame                          only OpenKore
       -DryRun                          print what would be run
+  roz game <name>                    start only the game client for an OpenKore that is already running
+  roz gamepid <name>                 print the pid of the game client bridged to that instance (0 = none)
   roz new <name> -Follow <leader>    new support instance (next free port, config from templates)
   roz new <name> -CloneFrom <inst>   new instance copied from another one (e.g. a second farmer)
       -Port N                          choose the port yourself
@@ -547,6 +618,12 @@ try {
         'status' { Show-Status (Get-Registry) }
         'check'  { $r = Get-Registry; if ((Invoke-Check $r (Get-Paths $r)) -gt 0) { exit 1 } }
         'start'  { $r = Get-Registry; Invoke-Start $r (Get-Paths $r) $Names }
+        'game'   { $r = Get-Registry; Invoke-Game $r (Get-Paths $r) ($Names | Select-Object -First 1) }
+        'gamepid' {
+            $r = Get-Registry
+            $i = Get-Instance $r ($Names | Select-Object -First 1)
+            Write-Output (Get-GamePid ([int]$i.port))
+        }
         'new'    { $r = Get-Registry; New-Instance $r (Get-Paths $r) ($Names | Select-Object -First 1) $Role $Follow $Port $CloneFrom }
         'remove' { $r = Get-Registry; Remove-Instance $r ($Names | Select-Object -First 1) ([bool]$DeleteFiles) }
         'build'  { $r = Get-Registry; Build-Dll (Get-Paths $r) }
