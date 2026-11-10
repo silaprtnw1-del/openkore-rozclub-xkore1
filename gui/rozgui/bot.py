@@ -255,7 +255,7 @@ class Bot:
         log.error('%s: could not write %s after 10 tries: %s', self.name, path, last_err)
         return False
 
-    def start(self, console_style: str = 'Minimized') -> bool:
+    def start(self, console_style: str = 'Hidden') -> bool:
         return launch_roz_start(self.root, [self.name], console_style)
 
     def account_chars(self) -> list[str]:
@@ -347,8 +347,8 @@ def run_roz(root: str, args: list[str], timeout: float = 180.0) -> tuple[int, st
 def launch_roz_start(root: str, names: list[str], console_style: str) -> bool:
     """Run `roz.ps1 start <names...>` hidden; it raises its own UAC prompt. False if it could not launch."""
     if console_style not in ('Normal', 'Minimized', 'Hidden'):
-        log.error('invalid console style %r, using Minimized', console_style)
-        console_style = 'Minimized'
+        log.error('invalid console style %r, using Hidden', console_style)
+        console_style = 'Hidden'
     ps1 = os.path.join(root, 'scripts', 'roz.ps1')
     if not os.path.isfile(ps1):
         log.error('roz.ps1 not found: %s', ps1)

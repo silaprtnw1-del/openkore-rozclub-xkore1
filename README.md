@@ -8,7 +8,8 @@
 | ทำอะไร | ไฟล์ |
 |---|---|
 | เปิดโปรแกรมควบคุม (GUI) | `Start-GUI.cmd` |
-| เปิด GUI แบบ Administrator | `Start-GUI-Admin.cmd` (จำเป็นสำหรับล็อกอินอัตโนมัติ) |
+| เปิด GUI แบบ Administrator | `Start-GUI-Admin.vbs` (ไม่มีหน้าต่างดำ) หรือ `Start-GUI-Admin.cmd` — จำเป็นสำหรับล็อกอินอัตโนมัติ |
+| หน้าต่าง OpenKore ตอนเปิดบอทจาก GUI | ซ่อนไว้ (ตั้งได้ในแท็บ 🧩 โปรแกรม) — ดู log ในแท็บ 📜 บันทึก |
 | เปิดบอททุกตัว | `Start-ROZ-All.cmd` |
 | เปิดทีละตัว | `Start-ROZCLUB-XKore1.cmd` (potato7), `Start-ROZCLUB-XKore1-kiminoto.cmd` |
 | คำสั่งจัดการ | `roz list` · `roz status` · `roz check` · `roz start <ชื่อ\|all>` · `roz game <ชื่อ>` · `roz gamepid <ชื่อ>` · `roz new …` · `roz remove …` · `roz build` |

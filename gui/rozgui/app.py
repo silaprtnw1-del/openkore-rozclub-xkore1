@@ -55,6 +55,23 @@ POLL_MS: Final[int] = 1000
 # After "start bot": give up waiting for the game window this long past boot_delay.
 STARTUP_LOGIN_GIVEUP_SECONDS: Final[float] = 120.0
 USER_STOP_GRACE_SECONDS: Final[float] = 90.0   # after ⏹/✖ a drop to the login screen is not a disconnect
+# OpenKore console windows: hidden by default since 2026-11-10 (user: only the GUI should show).
+# Settings saved before that hold 'Minimized' (it used to be written as the default), so they
+# are switched to 'Hidden' once; a choice made after that in the โปรแกรม tab is kept.
+CONSOLE_STYLE_REV: Final[int] = 2
+
+
+def apply_console_default(s: dict[str, Any]) -> bool:
+    """Switch older settings to hidden consoles once. True if `s` changed (save it)."""
+    try:
+        rev = int(s.get('console_style_rev') or 0)
+    except (TypeError, ValueError):
+        rev = 0
+    if rev >= CONSOLE_STYLE_REV:
+        return False
+    s['console_style'] = 'Hidden'
+    s['console_style_rev'] = CONSOLE_STYLE_REV
+    return True
 # Delivered in phases. 1 = dashboard + control + log, 2 = + notifications, 3 = + settings editor.
 PHASE: Final[int] = 3
 GUI_DIR: Final[str] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -531,6 +548,8 @@ class App(tk.Tk):
         self._style()
 
         self.settings = self._load_settings()
+        if apply_console_default(self.settings):
+            self._save_settings()
         self.geometry(self.settings.get('geometry') or '1280x800')
         reg = load_registry(ROOT_DIR)
         self.registry = reg
@@ -913,7 +932,7 @@ class App(tk.Tk):
         if not bots:
             self.toast('บอทที่เลือกเปิดอยู่แล้ว หรือกำลังเปิด', 'warn')
             return
-        style = str(self.settings.get('console_style', 'Minimized'))
+        style = str(self.settings.get('console_style', 'Hidden'))
         if not launch_roz_start(ROOT_DIR, [b.name for b in bots], style):
             self.toast('เปิด PowerShell ไม่ได้ — ดูรายละเอียดใน gui\\gui-error.log', 'bad')
             return
@@ -1733,9 +1752,9 @@ class App(tk.Tk):
         f = self.tab_prog
         lf = ttk.LabelFrame(f, text=' 🖥️ หน้าต่าง OpenKore (console) ตอนเริ่มบอท ', padding=12)
         lf.pack(fill='x', padx=18, pady=(16, 6))
-        self.console_style = tk.StringVar(value=self.settings.get('console_style', 'Minimized'))
-        for val, text in (('Minimized', 'ย่อไว้ที่ taskbar (แนะนำ)'),
-                          ('Hidden', 'ซ่อนทั้งหมด — ไม่เห็น log เลย ปิดบอทจากโปรแกรมนี้เท่านั้น'),
+        self.console_style = tk.StringVar(value=self.settings.get('console_style', 'Hidden'))
+        for val, text in (('Hidden', 'ซ่อนทั้งหมด (แนะนำ) — ดู log ในแท็บ 📜 บันทึก · ปิดบอทจากโปรแกรมนี้'),
+                          ('Minimized', 'ย่อไว้ที่ taskbar'),
                           ('Normal', 'แสดงตามปกติ')):
             ttk.Radiobutton(lf, text=text, value=val, variable=self.console_style,
                             command=self._save_prog).pack(anchor='w', pady=2)
@@ -2180,7 +2199,7 @@ class App(tk.Tk):
         n.update({k: v for k, v in s.get('notify', {}).items() if k != 'events'})
         n['events'].update(s.get('notify', {}).get('events', {}))
         s['notify'] = n
-        s.setdefault('console_style', 'Minimized')
+        s.setdefault('console_style', 'Hidden')
         return s
 
     def _save_settings(self) -> bool:
