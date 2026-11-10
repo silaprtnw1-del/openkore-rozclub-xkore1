@@ -29,6 +29,7 @@ from .icons import IconCache
 from .itemtab import BuffItemTab, PotionTab
 from .skilltab import SkillTab
 from .tabs3c import MoveTab, PickupTab
+from .restocktab import RestockTab
 from .tradetab import TradeTab
 from .rozdb import RozDB
 from .tables import Tables
@@ -575,8 +576,9 @@ class App(tk.Tk):
         self.protocol('WM_DELETE_WINDOW', self.on_close)
         self.monster_tab.tables = self.tables   # OpenKore names are needed even if the web data fails
         self.icons = IconCache(self._call_soon)
-        self.potion_tab.icons = self.buff_item_tab.icons = self.pickup_tab.icons = self.trade_tab.icons = self.icons
-        self.pickup_tab.tables = self.trade_tab.tables = self.tables
+        self.potion_tab.icons = self.buff_item_tab.icons = self.pickup_tab.icons = self.icons
+        self.trade_tab.icons = self.restock_tab.icons = self.icons
+        self.pickup_tab.tables = self.trade_tab.tables = self.restock_tab.tables = self.tables
         self.potion_tab.render()
         self.buff_item_tab.render()
         self.after(200, self.poll)
@@ -1028,6 +1030,8 @@ class App(tk.Tk):
         self.trade_tab = TradeTab(self.cnb, self._mark_dirty,
                                   dict(bg=PANEL2, fg=TEXT, activebackground=ACCENT, font=App.F_BASE))
         self.cnb.add(self.trade_tab, text='ขาย / ฝาก')
+        self.restock_tab = RestockTab(self.cnb, self._skills_changed)
+        self.cnb.add(self.restock_tab, text='ซื้อ / เบิก')
         self.cnb.add(self.move_tab, text='เคลื่อนที่')
         self.login_tab = AutoLoginTab(self.cnb, self)
         self.cnb.add(self.login_tab, text='ล็อกอินอัตโนมัติ')
@@ -1167,6 +1171,7 @@ class App(tk.Tk):
         self.pickup_tab.fill(self.kc, b.control, self.kc.get('lockMap', '') if self.kc else '',
                              (status or {}).get('map', ''))
         self.trade_tab.fill(self.kc, b.control, char_json)
+        self.restock_tab.fill(self.kc, char_json)
         tpath = os.path.join(b.control, 'timeouts.txt')
         try:
             self.tkc = KConfig(tpath) if os.path.exists(tpath) else None
@@ -1203,6 +1208,8 @@ class App(tk.Tk):
             self.skill_tab.render()
         elif cur in (str(self.potion_tab), str(self.buff_item_tab)):
             self.nametowidget(cur).render()
+        elif cur == str(self.restock_tab):
+            self.restock_tab.reload()           # the advanced block editor may have changed buyAuto/getAuto
         elif cur == str(self.c_blocks):
             self.refresh_blocks()
 
@@ -1229,6 +1236,7 @@ class App(tk.Tk):
         self.monster_tab.set_db(db, self.tables)
         self.pickup_tab.set_db(db, self.tables)
         self.trade_tab.set_db(db, self.tables)
+        self.restock_tab.set_db(db, self.tables)
         self.potion_tab.render()            # item names may have improved
         self.buff_item_tab.render()
         if db.error:
