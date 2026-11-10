@@ -1,4 +1,4 @@
-"""ROZCLUB game database (https://rozclub.com/database/): map spawns and monsters.
+"""ROZCLUB game database (https://rozclub.com/database/): map spawns, monsters, items, NPCs.
 
 The site serves plain JSON wrapped as `RZ.put("<name>", <json>);`. Files are
 cached under gui/cache/ and refreshed once a day; when the site cannot be
@@ -51,6 +51,25 @@ class Mob:
     boss: bool
     mvp: bool
     drops: tuple[tuple[int, int], ...] = ()     # (item id, rate per 10000)
+
+
+@dataclass(frozen=True)
+class Npc:
+    name: str                                  # Tool Dealer
+    map: str                                   # payon
+    x: int
+    y: int
+    kind: str                                  # shop / kafra / town / quest / ...
+    shop: tuple[tuple[int, int], ...] = ()     # (item id, price in zeny) for kind 'shop'
+
+    @property
+    def where(self) -> str:
+        """OpenKore's NPC spec: 'payon 159 96'."""
+        return f'{self.map} {self.x} {self.y}'
+
+    @property
+    def is_kafra(self) -> bool:
+        return self.kind == 'kafra' or 'kafra' in self.name.lower()
 
 
 def _unwrap(raw: str, name: str) -> Any:
@@ -109,6 +128,7 @@ class RozDB:
         self.maps: dict[str, MapInfo] = {}
         self.mobs: dict[int, Mob] = {}
         self.items: dict[int, tuple[str, str]] = {}    # 11615 -> ('Sweet Potato', 'usable')
+        self.npcs: list[Npc] = []
         self.source = 'none'
         self.error = ''
 
@@ -130,7 +150,33 @@ class RozDB:
             db._parse_items(items_raw)
         except Exception as e:
             log.warning('rozclub items-index unavailable: %s', e)
+        try:                                   # NPCs only feed pickers; typing "map x y" still works
+            npcs_raw, _ = _load('npcs', force)
+            db._parse_npcs(npcs_raw)
+        except Exception as e:
+            log.warning('rozclub npcs unavailable: %s', e)
         return db
+
+    def _parse_npcs(self, raw: Any) -> None:
+        rows = raw.get('n') if isinstance(raw, dict) else None
+        if not isinstance(rows, list):
+            log.warning('npcs.js: expected {"n": [...]}, got %s', type(raw).__name__)
+            return
+        bad = 0
+        for r in rows:
+            # [name, map, x, y, kind(, [[item id, price], ...], currency)]
+            if not (isinstance(r, list) and len(r) >= 5 and isinstance(r[0], str) and isinstance(r[1], str)):
+                bad += 1
+                continue
+            shop: tuple[tuple[int, int], ...] = ()
+            if len(r) >= 6 and isinstance(r[5], list):
+                shop = tuple((_int(s[0]), _int(s[1])) for s in r[5] if isinstance(s, list) and len(s) >= 2)
+            self.npcs.append(Npc(r[0].strip(), r[1], _int(r[2]), _int(r[3]), str(r[4]), shop))
+        if bad:
+            log.warning('npcs.js: skipped %d malformed rows', bad)
+
+    def npcs_on(self, map_name: str) -> list[Npc]:
+        return [n for n in self.npcs if n.map == map_name]
 
     def _parse_items(self, rows: Any) -> None:
         if not isinstance(rows, list):

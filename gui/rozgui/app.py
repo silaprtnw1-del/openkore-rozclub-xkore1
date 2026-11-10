@@ -29,6 +29,7 @@ from .icons import IconCache
 from .itemtab import BuffItemTab, PotionTab
 from .skilltab import SkillTab
 from .tabs3c import MoveTab, PickupTab
+from .tradetab import TradeTab
 from .rozdb import RozDB
 from .tables import Tables
 
@@ -80,14 +81,9 @@ FORM: Final[list[tuple[str, list[FormField]]]] = [
         ('attackMaxDistance', 'ระยะโจมตีสูงสุด', 'num', (0, 15, 0.5), 'ควรมากกว่าระยะโจมตีเล็กน้อย'),
         ('attackChangeTarget', 'เปลี่ยนเป้าเมื่อมีมอนตีเรา', 'bool', None, ''),
     ]),
-    # itemsTakeAuto / itemsGatherAuto ("ไม่เก็บเลย") are owned by tabs3c.PickupTab and
-    # teleportAuto_hp / minAggressives / idle by tabs3c.MoveTab: one widget per key.
-    ('🏪 ขาย / ฝากของ', [
-        ('sellAuto', 'ขายของอัตโนมัติ', 'bool', None, 'ขายตามที่ตั้งใน items_control.txt'),
-        ('sellAuto_npc', 'NPC ขายของ', 'text', None, 'รูปแบบ: map x y  เช่น payon 159 96'),
-        ('storageAuto', 'ฝากของอัตโนมัติ', 'bool', None, ''),
-        ('storageAuto_npc', 'NPC คลัง (Kafra)', 'text', None, 'รูปแบบ: map x y'),
-    ]),
+    # itemsTakeAuto / itemsGatherAuto ("ไม่เก็บเลย") are owned by tabs3c.PickupTab,
+    # teleportAuto_hp / minAggressives / idle by tabs3c.MoveTab and sellAuto(_npc) /
+    # storageAuto(_npc) by tradetab.TradeTab: one widget per key.
     ('🛡️ ความปลอดภัย', [
         ('dcOnPM', 'ออกเกมทันทีเมื่อมีคน PM', 'bool', None, ''),
     ]),
@@ -579,8 +575,8 @@ class App(tk.Tk):
         self.protocol('WM_DELETE_WINDOW', self.on_close)
         self.monster_tab.tables = self.tables   # OpenKore names are needed even if the web data fails
         self.icons = IconCache(self._call_soon)
-        self.potion_tab.icons = self.buff_item_tab.icons = self.pickup_tab.icons = self.icons
-        self.pickup_tab.tables = self.tables
+        self.potion_tab.icons = self.buff_item_tab.icons = self.pickup_tab.icons = self.trade_tab.icons = self.icons
+        self.pickup_tab.tables = self.trade_tab.tables = self.tables
         self.potion_tab.render()
         self.buff_item_tab.render()
         self.after(200, self.poll)
@@ -1029,6 +1025,8 @@ class App(tk.Tk):
         self.move_tab = MoveTab(self.cnb, self._mark_dirty)
         self.tkc: KConfig | None = None
         self.cnb.add(self.pickup_tab, text='เก็บไอเทม')
+        self.trade_tab = TradeTab(self.cnb, self._mark_dirty)
+        self.cnb.add(self.trade_tab, text='ขาย / ฝาก')
         self.cnb.add(self.move_tab, text='เคลื่อนที่')
         self.login_tab = AutoLoginTab(self.cnb, self)
         self.cnb.add(self.login_tab, text='ล็อกอินอัตโนมัติ')
@@ -1167,6 +1165,7 @@ class App(tk.Tk):
         self.buff_item_tab.fill(self.kc, char_json, self._item_name)
         self.pickup_tab.fill(self.kc, b.control, self.kc.get('lockMap', '') if self.kc else '',
                              (status or {}).get('map', ''))
+        self.trade_tab.fill(self.kc, b.control, char_json)
         tpath = os.path.join(b.control, 'timeouts.txt')
         try:
             self.tkc = KConfig(tpath) if os.path.exists(tpath) else None
@@ -1228,6 +1227,7 @@ class App(tk.Tk):
         self.rozdb = db
         self.monster_tab.set_db(db, self.tables)
         self.pickup_tab.set_db(db, self.tables)
+        self.trade_tab.set_db(db, self.tables)
         self.potion_tab.render()            # item names may have improved
         self.buff_item_tab.render()
         if db.error:
@@ -1239,7 +1239,7 @@ class App(tk.Tk):
         if not self.kc:
             return False
         if (self.kc.dirty or self.basic_tab.is_dirty() or self.monster_tab.is_dirty()
-                or self.pickup_tab.is_dirty() or self.move_tab.is_dirty()):
+                or self.pickup_tab.is_dirty() or self.move_tab.is_dirty() or self.trade_tab.is_dirty()):
             return True
         try:
             return any(self._form_value(k) != self.form_orig.get(k, '') for k in self.form_vars)
@@ -1268,18 +1268,20 @@ class App(tk.Tk):
         try:
             self.basic_tab.apply(self.kc)
             timeouts_changed = self.move_tab.apply(self.kc, self.tkc)
+            self.trade_tab.apply_config(self.kc)
         except ValueError as e:
             messagebox.showerror('ค่าไม่ถูกต้อง', str(e))
             return
         self.pickup_tab.apply_config(self.kc)
         counter_changed = self.basic_tab.counter() != self.monster_tab.settings.counter
         mon_changed = self.monster_tab.is_dirty() or counter_changed
-        pickup_changed = False
+        pickup_changed = items_changed = False
         try:
             backup = self.kc.save()
             if mon_changed:
                 self.monster_tab.save(self.basic_tab.counter())
             pickup_changed = self.pickup_tab.save(os.path.join(self._openkore_root(), 'control', 'pickupitems.txt'))
+            items_changed = self.trade_tab.save()
             if timeouts_changed and self.tkc is not None:
                 self.tkc.save()
         except OSError as e:
@@ -1293,6 +1295,7 @@ class App(tk.Tk):
         if b.running:
             reloads = (['reload config'] + (['reload mon_control', 'reload priority'] if mon_changed else [])
                        + (['reload pickupitems'] if pickup_changed else [])
+                       + (['reload items_control'] if items_changed else [])
                        + (['reload timeouts'] if timeouts_changed else []))
             if b.send(*reloads):
                 msg += ' และสั่งบอทโหลดค่าใหม่แล้ว'
