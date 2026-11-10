@@ -51,6 +51,7 @@ STATE_COLORS: Final[dict[str, str]] = {'ok': OK, 'warn': WARN, 'bad': BAD, 'off'
 POLL_MS: Final[int] = 1000
 # After "start bot": give up waiting for the game window this long past boot_delay.
 STARTUP_LOGIN_GIVEUP_SECONDS: Final[float] = 120.0
+USER_STOP_GRACE_SECONDS: Final[float] = 90.0   # after ⏹/✖ a drop to the login screen is not a disconnect
 # Delivered in phases. 1 = dashboard + control + log, 2 = + notifications, 3 = + settings editor.
 PHASE: Final[int] = 3
 GUI_DIR: Final[str] = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -550,6 +551,8 @@ class App(tk.Tk):
         self._last_recovery: dict[str, float] = {}
         self._recovery_stopped: set[str] = set()
         self._login_episode: set[str] = set()
+        self._was_online: set[str] = set()      # in game since OpenKore started (a later drop = disconnect)
+        self._user_stop: dict[str, float] = {}  # ⏹/✖ pressed: OpenKore may still report state 1 while exiting
         self._login_testing: set[str] = set()
         self._pid_checked: set[str] = set()
         self._pid_retry: dict[str, float] = {}
@@ -924,6 +927,8 @@ class App(tk.Tk):
     def stop_selected(self) -> None:
         b = self.cur_bot()
         if b and b.running and messagebox.askyesno('ปิดบอท', f'ปิด OpenKore ของ {b.name}?\n(หน้าต่างเกมจะหลุดการเชื่อมต่อ)'):
+            self._was_online.discard(b.name)        # a stop, not a disconnect: no auto login
+            self._user_stop[b.name] = time.time()
             self.cmd('quit', 'ปิดบอท')
 
     def kill_selected(self) -> None:
@@ -937,6 +942,8 @@ class App(tk.Tk):
                      else '(ไม่พบหน้าต่างเกมของบอทนี้ — ปิดเฉพาะ OpenKore)')
         if messagebox.askyesno('บังคับปิด', f'บังคับปิด OpenKore ของ {b.name} (pid {b.status.get("pid")}) {game_line}?\n'
                                              'ใช้เมื่อบอทค้างและกดปิดปกติไม่ได้ — จะมีหน้าต่าง UAC ถาม'):
+            self._was_online.discard(b.name)
+            self._user_stop[b.name] = time.time()
             if b.force_kill(game_pid):
                 self.add_feed(b.name, '✖ สั่งบังคับปิด' + (' (OpenKore + เกม)' if game_pid else ''), 'bad')
             else:
@@ -1913,7 +1920,10 @@ class App(tk.Tk):
 
     def _maybe_recover(self, b: Bot) -> None:
         name = b.name
+        if not b.running:
+            self._was_online.discard(name)   # stopped/closed by the user: never log back in on its own
         if b.online:
+            self._was_online.add(name)
             self._offline_since.pop(name, None)
             self._recovery_attempts.pop(name, None)
             self._recovery_stopped.discard(name)
@@ -1956,13 +1966,20 @@ class App(tk.Tk):
                 self.notifier.notify(f'⚠️ [{name}] หลุดและไม่พบหน้าต่างเกม — เปิดเกม/ล็อกอินด้วยมือก่อน')
             return
         if not relogin.has_dialog(pid):
-            # Only act on the known Disconnected/Error popup. Typing into a window
-            # that is still in-game (frozen client) would send junk to the game.
-            # State 3 (character select, OpenKore Receive.pm received_characters) is safe:
-            # only arrows/Enter are sent. Once a dialog started an episode, retries at the
-            # login screen are allowed.
-            if int((b.status or {}).get('state', 0)) != 3 and name not in self._login_episode:
+            # No Windows popup. Start when:
+            # - state 3 (character select): only clicks/arrows/Enter are sent;
+            # - an episode already started (retries at the login screen);
+            # - the bot was in game and OpenKore (still running) has been back at the
+            #   login state for offline_seconds: a disconnect. ROZCLUB draws its
+            #   'connection lost' box inside the game, so no popup is ever found;
+            #   LoginRunner closes that box (screen check) before typing anything.
+            state = int((b.status or {}).get('state', 0))
+            dropped = (name in self._was_online and b.running and state in (0, 1)
+                       and time.time() - self._user_stop.get(name, 0.0) > USER_STOP_GRACE_SECONDS)
+            if state != 3 and name not in self._login_episode and not dropped:
                 return
+            if dropped:
+                self._login_episode.add(name)
         else:
             self._login_episode.add(name)
         self._start_recovery(b, s, pid)

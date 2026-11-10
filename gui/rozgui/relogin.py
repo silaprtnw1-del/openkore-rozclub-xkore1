@@ -315,6 +315,16 @@ CHAR_CARD_STEP: Final[tuple[int, int]] = (157, 195)
 # screenshots. The mouse is parked on the empty strip below the cards while checking.
 CHAR_FRAME_GREY: Final[tuple[int, int, int]] = (132, 140, 148)
 CHAR_PARK_POINT: Final[tuple[int, int]] = (512, 745)
+# ROZCLUB's own message box ('การเชื่อมต่อเซิร์ฟเวอร์ถูกตัดขาด', 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ'):
+# drawn inside the game, centred, one OK button. Same place over the map and over the
+# login screen (2026-11-10 12:05 / 12:27 screenshots, 1024x768): light-blue title bar,
+# white body, grey frame. The login, map, service and character screens do not match.
+MSGBOX_TITLE: Final[tuple[tuple[int, int], ...]] = ((390, 333), (450, 333), (520, 333), (600, 333), (650, 333))
+MSGBOX_TITLE_RGB: Final[tuple[int, int, int]] = (189, 206, 247)
+MSGBOX_BODY: Final[tuple[tuple[int, int], ...]] = ((450, 390), (520, 420), (600, 400))
+MSGBOX_FRAME: Final[tuple[tuple[int, int], ...]] = ((656, 380), (520, 443))
+MSGBOX_FRAME_RGB: Final[tuple[int, int, int]] = (206, 206, 206)
+MSGBOX_CLOSE_SECONDS: Final[float] = 2.0      # after Enter on the box, before looking again
 
 
 def char_card_point(slot: int) -> tuple[int, int]:
@@ -377,6 +387,17 @@ def grab_client(hwnd: int) -> Any | None:
     except (ImportError, OSError, ValueError) as e:
         log.warning('relogin: cannot capture the game area: %s', e)
         return None
+
+
+def _near(p: tuple[int, int, int], ref: tuple[int, int, int], tol: int = 10) -> bool:
+    return all(abs(c - r) <= tol for c, r in zip(p, ref))
+
+
+def ingame_box_visible(img: Any) -> bool:
+    """ROZCLUB's in-game message box is open (1024x768 capture of the game area)."""
+    return (all(_near(img.getpixel(p), MSGBOX_TITLE_RGB) for p in MSGBOX_TITLE)
+            and all(min(img.getpixel(p)) >= 245 for p in MSGBOX_BODY)
+            and all(_near(img.getpixel(p), MSGBOX_FRAME_RGB) for p in MSGBOX_FRAME))
 
 
 def highlighted_cards(img: Any) -> list[int]:
@@ -822,14 +843,22 @@ class LoginRunner:
             return 'fail'
         self.shot('before')
         self.dismiss_dialog(main, cancel)              # Windows popups only; in-game boxes are handled by Enter
-        if after_kick and state <= 1:
-            # The kick leaves the map on screen under the in-game box 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ' [OK];
-            # the login screen appears only after OK. Typing before that went nowhere (2026-11-10 12:06).
-            press(VK_RETURN)
-            self.log('ปิดกล่อง "เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ" (กด Enter) — รอหน้า login')
-            if not self.wait(KICK_BOX_CLOSE_SECONDS, cancel):
+        if state <= 1:
+            # A kick or a disconnect leaves ROZCLUB's in-game box [OK] on screen (often over
+            # the map); the login screen appears only after OK. Typing before that went
+            # nowhere (2026-11-10 12:06).
+            box = self._close_ingame_box(main, cancel)
+            if box == 'stuck' or cancel():
                 return 'fail'
-            self.shot('after-kick-box')
+            if box == 'unknown' and after_kick:
+                # Screen not checkable (size/capture): after a kick the box is always there.
+                press(VK_RETURN)
+                self.log('ปิดกล่อง "เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ" (กด Enter) — รอหน้า login')
+                box = 'closed'
+            if box == 'closed':
+                if not self.wait(KICK_BOX_CLOSE_SECONDS, cancel):
+                    return 'fail'
+                self.shot('after-box')
         if state <= 1:
             if not self.wait(self.s.login_delay, cancel) or not self._focused(main, 'ล็อกอิน'):
                 return 'fail'
@@ -868,6 +897,31 @@ class LoginRunner:
             press(VK_RETURN)
             self.log(f'เลือกตัวละครช่อง {self.s.char_slot} (การ์ดถูกเลือกแล้ว กด Enter)')
         return self._await_map(is_online, cancel)
+
+    def _close_ingame_box(self, main: int, cancel: Callable[[], bool]) -> str:
+        """Close ROZCLUB's in-game message box(es) with Enter, checking the screen each time.
+        'closed', 'none' (no box), 'stuck' (still open after 3 Enters) or 'unknown'
+        (game area not 1024x768, or no capture)."""
+        if client_size(main) != CHAR_CLIENT_SIZE:
+            return 'unknown'
+        closed = False
+        for _ in range(3):                       # a second box can follow the first
+            img = grab_client(main)
+            if img is None:
+                return 'closed' if closed else 'unknown'
+            if not ingame_box_visible(img):
+                return 'closed' if closed else 'none'
+            press(VK_RETURN)
+            closed = True
+            self.log('พบกล่องข้อความในเกม (เช่น "การเชื่อมต่อเซิร์ฟเวอร์ถูกตัดขาด") — กด Enter ปิด')
+            if not self.wait(MSGBOX_CLOSE_SECONDS, cancel):
+                return 'closed'
+        img = grab_client(main)
+        if img is not None and not ingame_box_visible(img):
+            return 'closed'
+        self.log('กล่องข้อความในเกมยังไม่ปิดหลังกด Enter 3 ครั้ง — ไม่พิมพ์รหัส')
+        self.shot('box-stuck')
+        return 'stuck'
 
     def _slot_has_character(self, cancel: Callable[[], bool]) -> bool:
         """Refuse an empty slot: Enter / a click there opens 'สร้างตัวละคร' instead of logging in.
