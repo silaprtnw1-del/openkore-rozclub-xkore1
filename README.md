@@ -93,6 +93,24 @@ tools\                เครื่องมือแยก (packetExtractor �
 _archive\             ไฟล์ .bak เก่า, packet capture, build เก่า — เก็บไว้ในเครื่อง ไม่อยู่ใน git
 ```
 
+หน้าต่างหลัก (`gui\rozgui\app.py`) ประกอบจาก mixin แยกไฟล์ตามหน้า — แก้หน้าไหนให้แก้ไฟล์ของหน้านั้น:
+
+```
+app.py          App: สร้างหน้าต่าง, poll, เลือกบอท, ปิดโปรแกรม, ต่อแท็บทีม
+theme.py        สี, ฟอนต์ (Fonts.F_*), สไตล์ ttk
+settings.py     path และไฟล์ตั้งค่า GUI (%APPDATA%\ROZBotControl\settings.json)
+widgets.py      Bar, Scrollable, BotCard
+addbot.py       หน้าต่างเพิ่มบอท
+overview.py     🏠 ภาพรวม: สถานะ, ฟีด, เริ่ม/หยุด/บังคับปิด
+configpage.py   ⚙️ ตั้งค่าบอท: ฟอร์ม, แท็บย่อย, บล็อก, คีย์ดิบ, โหลด/บันทึก config
+notifypage.py   🔔 แจ้งเตือน
+logpage.py      📜 บันทึก
+programpage.py  🧩 โปรแกรม: ตัวเลือกเปิดบอท, เพิ่ม/ลบบอท
+recovery.py     ล็อกอินอัตโนมัติ / ล็อกอินใหม่เมื่อหลุด (ทีละตัว)
+```
+
+ชื่อ method ห้ามซ้ำกันข้ามไฟล์ (tests\test_app_build.py ตรวจให้)
+
 ## สิ่งที่อยู่นอกโปรเจกต์
 
 - OpenKore: `C:\Users\silap\openkore` · เกม: `D:\ROZCLUB` (ตั้งใน `instances.json`)
