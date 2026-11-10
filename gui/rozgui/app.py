@@ -31,6 +31,7 @@ from .skilltab import SkillTab
 from .tabs3c import MoveTab, PickupTab
 from .restocktab import RestockTab
 from .statskilltab import StatSkillTab
+from .teamtab import TeamSource, TeamTab
 from .tradetab import TradeTab
 from .rozdb import RozDB
 from .tables import Tables
@@ -734,6 +735,10 @@ class App(tk.Tk):
         self.tab_prog = ttk.Frame(self.nb, style='Panel.TFrame')
         self.nb.add(self.tab_over, text='🏠 ภาพรวม')
         self.nb.add(self.tab_conf, text='⚙️ ตั้งค่าบอท')
+        # Team page: every bot's follow / party / farm map in one table (teamtab.py).
+        self.team_tab = TeamTab(self.nb, self._team_sources, self._team_saved)
+        self.nb.add(self.team_tab, text='👥 ทีม')
+        self.nb.bind('<<NotebookTabChanged>>', lambda e: self._on_main_tab())
         self.nb.add(self.tab_noti, text='🔔 แจ้งเตือน')
         self.nb.add(self.tab_log, text='📜 บันทึก')
         self.nb.add(self.tab_prog, text='🧩 โปรแกรม')
@@ -747,6 +752,32 @@ class App(tk.Tk):
         if PHASE < 2:
             self.nb.tab(self.tab_noti, state='hidden')
             self.btn_summary.pack_forget()
+
+    # ------------------------------------------------------------------ team
+    def _team_sources(self) -> list[TeamSource]:
+        out: list[TeamSource] = []
+        for b in self.bots:
+            if b.running:
+                out.append(TeamSource(b.name, b.config_path, b.status, b.send))
+                continue
+            # Stopped: only the last known character name (so it can still be picked as a
+            # leader and followers of it are not flagged); no stale map / HP / party.
+            char = str((b.status or {}).get('char') or (b.read_char() or {}).get('char') or '')
+            out.append(TeamSource(b.name, b.config_path, {'char': char, 'online': 0} if char else None, None))
+        return out
+
+    def _on_main_tab(self) -> None:
+        if self.nb.select() == str(self.team_tab) and not self.team_tab.is_dirty():
+            self.team_tab.refresh()            # read the files again: other tabs may have saved
+
+    def _team_saved(self, bots: list[str]) -> None:
+        for name in bots:
+            self.add_feed(name, '👥 บันทึกการตั้งค่าทีม', 'ok')
+        self.toast(f'บันทึกทีมแล้ว: {", ".join(bots)}', 'ok')
+        # The config tab holds its own copy of one bot's config.txt: reload it unless it has edits.
+        loaded = self.bot_by_name.get(self.kc_bot) if self.kc_bot else None
+        if self.kc is not None and loaded is not None and loaded.name in bots and not self._config_dirty():
+            self.load_config(bot=loaded)
 
     def toast(self, text: str, kind: str = 'muted') -> None:
         color = {'ok': OK, 'bad': BAD, 'warn': WARN}.get(kind, MUTED)
