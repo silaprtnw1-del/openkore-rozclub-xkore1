@@ -1025,7 +1025,8 @@ class App(tk.Tk):
         self.move_tab = MoveTab(self.cnb, self._mark_dirty)
         self.tkc: KConfig | None = None
         self.cnb.add(self.pickup_tab, text='เก็บไอเทม')
-        self.trade_tab = TradeTab(self.cnb, self._mark_dirty)
+        self.trade_tab = TradeTab(self.cnb, self._mark_dirty,
+                                  dict(bg=PANEL2, fg=TEXT, activebackground=ACCENT, font=App.F_BASE))
         self.cnb.add(self.trade_tab, text='ขาย / ฝาก')
         self.cnb.add(self.move_tab, text='เคลื่อนที่')
         self.login_tab = AutoLoginTab(self.cnb, self)

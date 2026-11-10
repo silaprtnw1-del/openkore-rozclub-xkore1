@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 import re
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import messagebox, simpledialog, ttk
 from typing import Any, Callable, Final
 
 from . import itemctl as I
@@ -41,7 +41,8 @@ def npc_value(text: str) -> str:
 
 
 class TradeTab(ttk.Frame):
-    def __init__(self, parent: tk.Misc, on_change: Callable[[], None]) -> None:
+    def __init__(self, parent: tk.Misc, on_change: Callable[[], None],
+                 menu_opts: dict[str, Any] | None = None) -> None:
         super().__init__(parent, style='Panel.TFrame', padding=(16, 10))
         self.on_change = on_change
         self.db = RozDB()
@@ -114,12 +115,17 @@ class TradeTab(ttk.Frame):
         tv.heading('#0', text='ไอเทม', anchor='w')
         tv.column('#0', width=300, anchor='w')
         for c, text, wdt in (('amount', 'ในกระเป๋า', 80), ('kind', 'ประเภท', 100),
-                             ('gui', 'ตั้งที่นี่', 150), ('file', 'ตอนนี้ (ในไฟล์ / market)', 200)):
+                             ('gui', 'ตั้งที่นี่ ▾ (คลิก)', 170), ('file', 'ตอนนี้ (ในไฟล์ / market)', 200)):
             tv.heading(c, text=text, anchor='w')
             tv.column(c, width=wdt, anchor='w', stretch=(c == 'file'))
         tv.configure(style='Pickup.Treeview')
         tv.pack(fill='both', expand=True)
+        # Set an item right in its row: click its "ตั้งที่นี่" cell, double-click or right-click the row.
+        tv.bind('<ButtonRelease-1>', self._on_click)
+        tv.bind('<Double-1>', self._on_row_menu)
+        tv.bind('<Button-3>', self._on_row_menu)
         self.tv = tv
+        self.menu_opts = menu_opts or {}
 
         act = ttk.Frame(self, style='Panel.TFrame')
         act.pack(fill='x', pady=(6, 0))
@@ -249,7 +255,7 @@ class TradeTab(ttk.Frame):
             amount = self.bag.get(item_id, ('', 0))[1]
             tv.insert('', 'end', iid=iid, text=f'  {label}',
                       values=(amount or '', KIND_TH.get(self._kind(item_id), self._kind(item_id) or '-'),
-                              gui or '–', now or '–'))
+                              f'{gui or "ไม่ยุ่ง"}  ▾', now or '–'))
             if iid in keep_sel:
                 tv.selection_add(iid)
             if self.icons:
@@ -265,26 +271,76 @@ class TradeTab(ttk.Frame):
             self.note.configure(text=f'ไม่มีข้อมูลดรอปของแผนที่ฟาร์ม "{self.lock_map}" จาก rozclub.com')
         else:
             self.note.configure(text=(
-                'เลือกแถว (Ctrl/Shift เลือกหลายแถว) แล้วกดปุ่มด้านล่าง · "ตั้งที่นี่" ชนะค่าในไฟล์และค่าจาก market scanner · '
-                '"ไม่ยุ่ง" = ใช้ค่าตามไฟล์'))
+                'คลิกช่อง "ตั้งที่นี่" (หรือดับเบิลคลิก / คลิกขวาที่แถว) เพื่อเลือกว่าจะทำอะไรกับไอเทมนั้น · '
+                'หลายแถว: Ctrl/Shift เลือก แล้วคลิกหรือใช้ปุ่มด้านล่าง · "ตั้งที่นี่" ชนะค่าในไฟล์และค่าจาก market scanner'))
 
     def _row_icon(self, iid: str, img: Any) -> None:
         if self.tv.exists(iid):
             self.tv.item(iid, image=img)
 
     # --------------------------------------------------------------- editing
-    def _apply_action(self, action: str) -> None:
+    def _on_click(self, event: tk.Event) -> None:
+        if self.tv.identify_region(event.x, event.y) == 'cell' and self.tv.identify_column(event.x) == '#3':
+            self._on_row_menu(event)                     # the "ตั้งที่นี่" cell opens the menu
+
+    def _on_row_menu(self, event: tk.Event) -> str:
+        row = self.tv.identify_row(event.y)
+        if not row:
+            return 'break'
+        if row not in self.tv.selection():
+            self.tv.selection_set((row,))
         rows = [int(r) for r in self.tv.selection()]
+        current = self.ic.rules.get(rows[0]) if len(rows) == 1 else None
+        cur_action = current.action if current else I.LEAVE
+        cur_keep = current.keep if current else 0
+
+        def mark(action: str, with_keep: bool = False) -> str:
+            on = len(rows) == 1 and action == cur_action and (cur_keep > 0) == with_keep
+            return '● ' if on else '    '
+        title = self._label(rows[0]) if len(rows) == 1 else f'{len(rows)} รายการที่เลือก'
+        menu = tk.Menu(self, tearoff=0, **self.menu_opts)
+        menu.add_command(label=title, state='disabled')
+        menu.add_separator()
+        menu.add_command(label=mark(I.LEAVE) + 'ไม่ยุ่ง (ใช้ค่าตามไฟล์)',
+                         command=functools.partial(self._apply_action, I.LEAVE, rows, 0))
+        menu.add_command(label=mark(I.KEEP) + 'เก็บในตัว (ไม่ฝาก ไม่ขาย)',
+                         command=functools.partial(self._apply_action, I.KEEP, rows, 0))
+        menu.add_separator()
+        for action in (I.STORE, I.SELL):
+            name = I.ACTION_TH[action]
+            menu.add_command(label=mark(action) + f'{name} ทั้งหมด',
+                             command=functools.partial(self._apply_action, action, rows, 0))
+            kept = f' (ตอนนี้ {cur_keep} ชิ้น)' if mark(action, True).startswith('●') else ''
+            menu.add_command(label=mark(action, True) + f'{name} — เหลือไว้ในตัว...{kept}',
+                             command=functools.partial(self._ask_keep, action, rows))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+        return 'break'
+
+    def _ask_keep(self, action: str, rows: list[int]) -> None:
+        rule = self.ic.rules.get(rows[0])
+        keep = simpledialog.askinteger(
+            I.ACTION_TH[action], f'{I.ACTION_TH[action]}: เหลือไว้ในตัวกี่ชิ้น?', parent=self,
+            initialvalue=rule.keep if rule and rule.action == action else 0, minvalue=0, maxvalue=30000)
+        if keep is not None:                             # None = cancelled
+            self._apply_action(action, rows, keep)
+
+    def _apply_action(self, action: str, rows: list[int] | None = None, keep: int | None = None) -> None:
+        if rows is None:
+            rows = [int(r) for r in self.tv.selection()]
         if not rows:
             self.note.configure(text='เลือกไอเทมในตารางก่อน แล้วค่อยกดปุ่ม')
             return
-        try:
-            keep = int(self.keep_var.get().strip() or '0')
-            if keep < 0:
-                raise ValueError
-        except ValueError:
-            messagebox.showerror('ค่าไม่ถูกต้อง', '"เหลือไว้ในตัว" ต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป')
-            return
+        if keep is None:
+            try:
+                keep = int(self.keep_var.get().strip() or '0')
+                if keep < 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror('ค่าไม่ถูกต้อง', '"เหลือไว้ในตัว" ต้องเป็นจำนวนเต็มตั้งแต่ 0 ขึ้นไป')
+                return
         if action == I.SELL:
             risky = [self._label(i) for i in rows if self._kind(i) in RISKY_KINDS]
             if risky and not messagebox.askyesno(
