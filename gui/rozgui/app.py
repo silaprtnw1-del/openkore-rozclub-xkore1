@@ -30,6 +30,7 @@ from .itemtab import BuffItemTab, PotionTab
 from .skilltab import SkillTab
 from .tabs3c import MoveTab, PickupTab
 from .restocktab import RestockTab
+from .statskilltab import StatSkillTab
 from .tradetab import TradeTab
 from .rozdb import RozDB
 from .tables import Tables
@@ -1021,6 +1022,8 @@ class App(tk.Tk):
         self.cnb.add(self.basic_tab, text='พื้นฐาน')
         self.cnb.add(self.monster_tab, text='มอนสเตอร์')
         self.cnb.add(self.skill_tab, text='สกิล')
+        self.statskill_tab = StatSkillTab(self.cnb, self._mark_dirty)
+        self.cnb.add(self.statskill_tab, text='อัปสเตตัส/สกิล')
         self.cnb.add(self.potion_tab, text='Potion')
         self.cnb.add(self.buff_item_tab, text='ไอเทมบัฟ')
         self.pickup_tab = PickupTab(self.cnb, self._mark_dirty)
@@ -1172,6 +1175,7 @@ class App(tk.Tk):
                              (status or {}).get('map', ''))
         self.trade_tab.fill(self.kc, b.control, char_json)
         self.restock_tab.fill(self.kc, char_json)
+        self.statskill_tab.fill(self.kc, char_json)
         tpath = os.path.join(b.control, 'timeouts.txt')
         try:
             self.tkc = KConfig(tpath) if os.path.exists(tpath) else None
@@ -1248,7 +1252,8 @@ class App(tk.Tk):
         if not self.kc:
             return False
         if (self.kc.dirty or self.basic_tab.is_dirty() or self.monster_tab.is_dirty()
-                or self.pickup_tab.is_dirty() or self.move_tab.is_dirty() or self.trade_tab.is_dirty()):
+                or self.pickup_tab.is_dirty() or self.move_tab.is_dirty() or self.trade_tab.is_dirty()
+                or self.statskill_tab.is_dirty()):
             return True
         try:
             return any(self._form_value(k) != self.form_orig.get(k, '') for k in self.form_vars)
@@ -1278,6 +1283,7 @@ class App(tk.Tk):
             self.basic_tab.apply(self.kc)
             timeouts_changed = self.move_tab.apply(self.kc, self.tkc)
             self.trade_tab.apply_config(self.kc)
+            self.statskill_tab.apply_config(self.kc)
         except ValueError as e:
             messagebox.showerror('ค่าไม่ถูกต้อง', str(e))
             return

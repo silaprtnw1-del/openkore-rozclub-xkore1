@@ -200,6 +200,24 @@ sub write_char {
         push @skills, _jobj({ handle => $handle, name => $name, lv => $lv, target => $target },
                             { lv => 1, target => 1 });
     }
+    # Whole skill tree, level 0 included (the "skills" list above holds learned ones only):
+    # the GUI's auto skill raise lets the user pick skills not learned yet. up = can be raised.
+    my @tree;
+    for my $handle (sort keys %{ $char->{skills} || {} }) {
+        my $sk = $char->{skills}{$handle};
+        my $name = $handle;
+        eval { $name = Skill->new(handle => $handle)->getName() || $handle; };
+        push @tree, _jobj({ handle => $handle, name => $name, lv => ($sk->{lv} || 0), up => ($sk->{up} ? 1 : 0) },
+                          { lv => 1, up => 1 });
+    }
+    # Base stats, bonuses and unspent points (Network/Receive.pm stat_info / stats_info).
+    my %st = (lv => $char->{lv} || 0, points_free => $char->{points_free} || 0,
+              points_skill => $char->{points_skill} || 0);
+    for my $s (qw(str agi vit int dex luk)) {
+        $st{$s} = $char->{$s} || 0;
+        $st{"${s}_bonus"} = $char->{"${s}_bonus"} || 0;
+    }
+    my $stats = _jobj(\%st, { map { $_ => 1 } keys %st });
     my @items;
     my $inv = $char->inventory;
     if ($inv) {
@@ -209,8 +227,8 @@ sub write_char {
                                { id => 1, amount => 1, type => 1, equipped => 1 });
         }
     }
-    my $json = sprintf('{"ts":%.1f,"char":%s,"skills":[%s],"items":[%s]}',
-                       time, _jstr($char->{name}), join(',', @skills), join(',', @items));
+    my $json = sprintf('{"ts":%.1f,"char":%s,"skills":[%s],"tree":[%s],"stats":%s,"items":[%s]}',
+                       time, _jstr($char->{name}), join(',', @skills), join(',', @tree), $stats, join(',', @items));
     my $file = _dir() . '/char.json';
     if (open(my $fh, '>:utf8', "$file.tmp")) {
         print $fh $json;
