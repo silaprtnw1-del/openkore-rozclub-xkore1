@@ -66,7 +66,9 @@ function Test-Admin {
 # Registry
 # --------------------------------------------------------------------------
 function Get-Registry {
-    if (-not (Test-Path -LiteralPath $Script:RegPath)) { throw "instances.json not found: $Script:RegPath" }
+    if (-not (Test-Path -LiteralPath $Script:RegPath)) {
+        throw "instances.json not found: $Script:RegPath (it is not in git: copy instances.example.json to instances.json and edit the paths)"
+    }
     return ([IO.File]::ReadAllText($Script:RegPath) | ConvertFrom-Json)
 }
 
@@ -318,10 +320,13 @@ function Start-Instance($paths, $inst, [bool]$noGame, [bool]$dry) {
 
     $okControl = Join-Path $paths.OpenKore 'control'
     $okTables = Join-Path $paths.OpenKore 'tables'
-    # Plugins: OpenKore's own folder plus this profile's GUI bridge (plugins\gui_ipc).
+    # Plugins: OpenKore's own folder plus this repo's GUI bridge (plugins\gui_ipc) and market
+    # scanner plugin (plugins\rozclub_market; its copy under OpenKore's plugins was renamed so
+    # it is not loaded twice). Which ones run is still decided by sys.txt loadPlugins_list.
     $okPlugins = Join-Path $paths.OpenKore 'plugins'
     $guiPlugin = Join-Path $Script:Root 'plugins\gui_ipc'
-    $okArgs = '--control="{0};{1}" --tables="{2};{3}" --logs="{4}" --plugins="{5};{6}" --ai=on --interface=Console' -f $control, $okControl, $tables, $okTables, $logs, $okPlugins, $guiPlugin
+    $mktPlugin = Join-Path $Script:Root 'plugins\rozclub_market'
+    $okArgs = '--control="{0};{1}" --tables="{2};{3}" --logs="{4}" --plugins="{5};{6};{7}" --ai=on --interface=Console' -f $control, $okControl, $tables, $okTables, $logs, $okPlugins, $guiPlugin, $mktPlugin
     # cmd /k "title ... && "perl" "openkore.pl" args" : cmd strips the outer quotes.
     # A hidden window uses /c so no invisible cmd.exe is left behind after OpenKore exits.
     $keep = if ($ConsoleStyle -eq 'Hidden') { '/c' } else { '/k' }

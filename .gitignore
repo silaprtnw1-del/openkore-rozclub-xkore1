@@ -30,6 +30,15 @@ build/
 *.exe
 *.o
 
+# ---- per-machine bot setup: not versioned (decision 2026-11-10) ---------
+# The bot registry and each bot's profile change all the time from the GUI.
+# Tracked instead: instances.example.json and bots/_example/.
+instances.json
+bots/*/control/
+bots/*/tables/
+!bots/_example/control/
+!bots/_example/tables/
+
 # ---- other repos / local-only material ----------------------------------
 tools/packetExtractor/
 evidence/

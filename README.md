@@ -63,12 +63,14 @@ OpenKore รออยู่ และ `roz gamepid <ชื่อ>` ดู pid �
 ## โครงสร้าง
 
 ```
-instances.json        รายชื่อบอท (ชื่อ, port, โฟลเดอร์ profile, role)
+instances.json        รายชื่อบอท (ชื่อ, port, โฟลเดอร์ profile, role) — ไม่อยู่ใน git, ตัวอย่าง: instances.example.json
 roz.cmd, Start-*.cmd  ตัวเปิด (เรียก scripts\roz.ps1)
-bots\<ชื่อ>\          profile ของบอทแต่ละตัว: control\ (config) · tables\ · logs\
+bots\<ชื่อ>\          profile ของบอทแต่ละตัว: control\ (config) · tables\ · logs\ — ไม่อยู่ใน git, ตัวอย่าง: bots\_example\
 gui\                  ROZ Bot Control (Python/Tkinter) — rozgui\ คือโค้ด, cache\ คือข้อมูลเกมที่โหลดมา
 plugins\gui_ipc\      ปลั๊กอิน OpenKore ที่ส่งสถานะ/รับคำสั่งจาก GUI
-plugins\rozclub_market\ ปลั๊กอินสแกนราคาตลาด (คำสั่ง market …)
+plugins\rozclub_market\ ปลั๊กอินสแกนราคาตลาด (คำสั่ง market …) — roz.ps1 โหลดจาก repo นี้
+tools\market_scanner\ ตัวสแกนตลาดที่ปลั๊กอินเรียก (ย้ายมาจาก C:\Users\silap\rearo วันที่ 2026-11-10)
+tests\                ชุดทดสอบ: python -m unittest discover -s tests -v (ไม่แตะเกมจริง)
 scripts\              roz.ps1 (ตัวจัดการหลายบอท) · templates\ (แม่แบบ config) · bin\ (NetRedirect DLL ที่ build)
 runtime\              Perl 32-bit, XSTools.dll, launcher — ไฟล์ไบนารี ไม่อยู่ใน git
 src\native\           source ของโปรแกรม native ใน runtime\
@@ -81,10 +83,15 @@ _archive\             ไฟล์ .bak เก่า, packet capture, build เ�
 
 - OpenKore: `C:\Users\silap\openkore` · เกม: `D:\ROZCLUB` (ตั้งใน `instances.json`)
 - การตั้งค่า GUI รวม Telegram token / Discord webhook: `%APPDATA%\ROZBotControl\settings.json`
-- ตัวสแกนตลาด: `C:\Users\silap\rearo\rozclub_market_scanner.py` (เขียน `bots\potato7\control\pickupitems.txt`
-  และเก็บส่วนที่ GUI ตั้งไว้ท้ายไฟล์ทุกครั้ง)
+- ตัวสแกนตลาดย้ายเข้า repo แล้ว (`tools\market_scanner\`) — เขียน `pickupitems.txt` / `items_control.txt`
+  ของ potato7 และเก็บส่วนที่ GUI ตั้งไว้ท้ายไฟล์ทุกครั้ง · สำเนาเก่าใน `C:\Users\silap\rearo` ไม่ได้ใช้แล้ว
+  และ `C:\Users\silap\openkore\plugins\rozclub_market\rozclub_market.pl` เปลี่ยนชื่อเป็น `.moved-to-repo`
+  (กันโหลดซ้ำ)
 
 ## git
 
-ไม่เก็บใน git: `logs`, การตั้งค่า GUI (token), cache, ไฟล์ `.bak` และไฟล์ไบนารี (`runtime\`, `*.dll`, `*.exe`)
+ไม่เก็บใน git: `logs`, การตั้งค่า GUI (token), cache, ไฟล์ `.bak`, ไฟล์ไบนารี (`runtime\`, `*.dll`, `*.exe`)
+และการตั้งค่าบอทของเครื่องนี้ (`instances.json`, `bots\<ชื่อ>\control\`, `tables\`) — commit ก่อนหน้า
+2026-11-10 ยังมีไฟล์เหล่านี้อยู่ ถ้า checkout commit เก่าแล้วกลับมา git อาจลบ/ทับไฟล์ตั้งค่าในเครื่อง
+ให้สำรอง `bots\` กับ `instances.json` ก่อน · ติดตั้ง: `pip install -r requirements.txt`
 อย่าใส่รหัสผ่านจริงใน `config.txt` (ช่อง `password` / `storageAuto_password` ว่างไว้)

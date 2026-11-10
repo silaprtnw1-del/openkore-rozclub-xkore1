@@ -1,0 +1,3 @@
+# ROZ Bot Control (gui/) runtime dependency. Tests use only the standard library:
+#   python -m unittest discover -s tests -v
+Pillow>=10   # item icons (WebP), auto-login screen checks and screenshots

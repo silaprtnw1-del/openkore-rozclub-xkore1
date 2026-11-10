@@ -16,13 +16,18 @@ package rozclub_market;
 #   - Only one scan runs at a time.
 
 use strict;
-use POSIX qw(:sys_wait_h);
+# POSIX is built-in to start.exe (32-bit packaged PerlApp).
+# Do NOT load external POSIX.pm from src/deps (64-bit Strawberry copy
+# shadows the builtin and breaks DynaLoader). WNOHANG=1 on Windows.
+use constant WNOHANG => 1;
 use Time::HiRes qw(time);
 use Plugins;
 use Globals;
 use Settings;
 use Log qw(message warning error);
 use Commands;
+use File::Basename qw(dirname);
+use File::Spec;
 
 Plugins::register('rozclub_market', 'ROZCLUB Live Market Scanner & Drop Optimizer', \&on_unload);
 
@@ -31,7 +36,10 @@ my $cmd_hook = Commands::register(
 );
 my $loop_hook = Plugins::addHook('mainLoop_post', \&poll_scanner);
 
-my $SCANNER_SCRIPT = 'C:\Users\silap\rearo\rozclub_market_scanner.py';
+# Loaded from <repo>\plugins\rozclub_market (roz.ps1 --plugins); the scanner sits in
+# <repo>\tools\market_scanner (moved from C:\Users\silap\rearo on 2026-11-10).
+my $SCANNER_SCRIPT = File::Spec->catfile(File::Spec->rel2abs(dirname(__FILE__)), File::Spec->updir,
+                                         File::Spec->updir, 'tools', 'market_scanner', 'rozclub_market_scanner.py');
 my $PYTHON = 'python';
 
 # Running scan: { pid, out_file, apply, min, started }

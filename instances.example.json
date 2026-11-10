@@ -1,0 +1,18 @@
+{
+    "openkoreRoot":  "C:\\openkore",
+    "gameRoot":  "D:\\ROZCLUB",
+    "gameExe":  "Ragnarok.exe",
+    "dll":  "scripts\\bin\\NetRedirect-ROZ-IAT-v4.dll",
+    "strawberryRoot":  "C:\\Strawberry",
+    "extraPath":  [],
+    "baseProfile":  "bots\\_example",
+    "startDelaySeconds":  6,
+    "instances":  [
+                      {
+                          "name":  "example",
+                          "port":  2351,
+                          "profile":  "bots\\_example",
+                          "role":  "farmer"
+                      }
+                  ]
+}
