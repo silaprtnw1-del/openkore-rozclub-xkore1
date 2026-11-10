@@ -100,7 +100,8 @@ sub game_login {
 		my $output;
 		# 099D
 		my @char_list = $self->getCharacters($session);
-		if ($self->{recvPacketParser}{packet_lut}{received_characters} eq '099D') {
+		if ($self->{recvPacketParser}{packet_lut}{received_characters} eq '099D'
+			|| $self->{recvPacketParser}{packet_lut}{received_characters_info} eq '082D') {
 			$output = $self->{recvPacketParser}->reconstruct({
 				switch => 'received_characters_info',
 				normal_slot => $charSvrSet{normal_slot},
@@ -176,6 +177,7 @@ sub char_login {
 					mapName => $charInfo->{map},
 					mapIP => $host,
 					mapPort => $self->{mapServer}->getPort,
+					mapUrl => $self->{mapServer}->getHost . ':' . $self->{mapServer}->getPort,
 				}));
 			}
 		}

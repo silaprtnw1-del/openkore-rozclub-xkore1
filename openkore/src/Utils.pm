@@ -151,10 +151,22 @@ sub get_client_solution {
 sub get_client_easy_solution {
 	my ($pos, $pos_to) = @_;
 
-	my $posX = $$pos{x};
-	my $posY = $$pos{y};
-	my $pos_toX = $$pos_to{x};
-	my $pos_toY = $$pos_to{y};
+	# ROZCLUB fix (2026-11-06): the loop below only stops when both coordinates
+	# match exactly. A fractional coordinate (e.g. 192.5) made it oscillate
+	# forever, pushing steps until perl-roz.exe ran out of memory (~1.3 GB in
+	# seconds) and crashed. Cells are integers, so truncate, and cap the steps.
+	my ($posX, $posY, $pos_toX, $pos_toY) = map { int($_ || 0) } ($$pos{x}, $$pos{y}, $$pos_to{x}, $$pos_to{y});
+	our $easy_solution_fraction_warnings;
+	if (($$pos{x} || 0) != $posX || ($$pos{y} || 0) != $posY || ($$pos_to{x} || 0) != $pos_toX || ($$pos_to{y} || 0) != $pos_toY) {
+		if (($easy_solution_fraction_warnings ||= 0) < 5 && defined &Log::warning) {
+			$easy_solution_fraction_warnings++;
+			my (undef, $file, $line) = caller(0);
+			my (undef, $file1, $line1) = caller(1);
+			Log::warning(sprintf("[easy_solution fix] non-integer coords %s,%s -> %s,%s (called from %s:%s, %s:%s)\n",
+				$$pos{x}, $$pos{y}, $$pos_to{x}, $$pos_to{y}, $file, $line, $file1 || '?', $line1 || '?'));
+		}
+	}
+	my $max_steps = abs($pos_toX - $posX) + abs($pos_toY - $posY) + 2;
 
 	# 1 - vertical or horizontal
 	# 2 - diagonal
@@ -164,6 +176,7 @@ sub get_client_easy_solution {
 
 	while (1) {
 		push(@{$solution}, { x => $posX, y => $posY });
+		last if (@{$solution} > $max_steps);
 
 		$stepType = 0;
 		if ($posX < $pos_toX) {

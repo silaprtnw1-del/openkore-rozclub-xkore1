@@ -39,6 +39,15 @@ sub new {
 	}
 
 	my %handlers = qw(
+		account_server_info 0B60
+		login_pin_code_request 08B9
+		received_character_ID_and_Map 0AC5
+		account_id 0283
+		map_loaded 02EB
+		actor_exists 09FF
+		actor_connected 09FE
+		actor_moved 09FD
+		actor_action 08C8
 		received_characters 0B72
 		received_characters_info 082D
 		sync_received_characters 09A0

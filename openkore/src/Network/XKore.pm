@@ -30,7 +30,6 @@ use Utils qw(dataWaiting timeOut);
 use Translation;
 use Misc qw(chatLog);
 use Network::MessageTokenizer;
-use Network::XKoreSessionFix;
 
 use constant IS_WINDOWS => ($^O eq 'MSWin32');
 
@@ -89,14 +88,8 @@ sub new {
 
 	message T("X-Kore mode intialized.\n"), "startup";
 
-	# Diagnostic: report which XKore.pm actually loaded and whether the
-	# session-ID helper is present. Helps confirm the active copy before a
-	# live XKore 1 login. Opt-in via XKore_transitionTrace.
 	if ($config{XKore_transitionTrace}) {
-		message sprintf("[XKore] loaded %s (XKoreSessionFix %s)\n",
-			__FILE__,
-			(defined &Network::XKoreSessionFix::rewrite_chenter ? "available" : "MISSING")),
-			"connection";
+		message sprintf("[XKore] loaded %s (Tee mode active)\n", __FILE__), "connection";
 	}
 
 	return $self;
@@ -231,15 +224,10 @@ sub clientRecv {
 # msg: A scalar to be sent to the RO client
 #
 sub clientSend {
-	my $self = shift;
-	my $msg = shift;
-
-	my $switch = uc(unpack("H2", substr($msg, 1, 1))) . uc(unpack("H2", substr($msg, 0, 1)));
-	if ($switch eq "02AE") { #initialize_message_id_encryption
-		$msg = "";
-	}
-
-	$self->{client}->send("R".pack("v", length($msg)).$msg) if ($self->clientAlive);
+	# Tee mode: NetRedirect's MyRecv() already returns decrypted server bytes
+	# directly to Ragnarok.exe, so echoing parsed server packets back via 'R'
+	# would duplicate every server packet.
+	return undef;
 }
 
 sub clientDisconnect {
@@ -296,13 +284,12 @@ sub checkConnection {
 	Plugins::callHook('XKore_start');
 	while ($loop && IS_WINDOWS) {
 		undef @list;
-		my @z = Utils::Win32::listProcesses();
-
-		foreach (@z) {
-			if (lc($_->{'exe'}) eq lc($config{XKore_exeName})) {
-				push @list, {exe => $_->{'exe'}, pid => $_->{'pid'}};
-			}
-		}
+		# The legacy listProcesses() XS function pushes an unbounded process
+		# list without extending the Perl stack. On current Windows systems
+		# that corrupts the interpreter. This dedicated auto-attach profile
+		# only needs the first matching process, so use the bounded lookup.
+		my $foundPid = Utils::Win32::GetProcByName($config{XKore_exeName});
+		push @list, {exe => $config{XKore_exeName}, pid => $foundPid} if $foundPid;
 
 		if (@list == 0) {
 			# no process, wait for start
@@ -441,12 +428,12 @@ sub recv {
 	$self->{incomingPackets} .= $msg;
 
 	while ($self->{incomingPackets} ne "") {
-		last if (!length($self->{incomingPackets}));
+		last if (length($self->{incomingPackets}) < 3);
 
 		my $type = substr($self->{incomingPackets}, 0, 1);
 		my $len = unpack("v",substr($self->{incomingPackets}, 1, 2));
 
-		last if ($len > length($self->{incomingPackets}));
+		last if (($len + 3) > length($self->{incomingPackets}));
 
 		$msg = substr($self->{incomingPackets}, 3, $len);
 		$self->{incomingPackets} = (length($self->{incomingPackets}) - $len - 3)?
@@ -462,27 +449,17 @@ sub recv {
 			}
 			$self->{serverPackets} .= $msg;
 		} elsif ($type eq "S") {
-			# Server-bound (or "to server") packets
-
-			# ROZCLUB: if the client logs in twice (two AC_ACCEPT_LOGIN
-			# replies), the second login replaces the session IDs on the
-			# login server, but the client may still send CH_ENTER (0x0065)
-			# with the IDs of the first one. The character server then
-			# answers HC_REFUSE_ENTER (0x006C) and OpenKore reports
-			# "invalid character specified". Always send the newest IDs.
-			if (my ($before, $after) = Network::XKoreSessionFix::rewrite_chenter(
-					\$msg, $Globals::sessionID, $Globals::sessionID2)) {
-				if ($before ne $after && $config{XKore_transitionTrace}) {
-					message sprintf("[XKore fix] CH_ENTER session IDs %s -> %s\n", $before, $after), "connection";
+			# Server-bound (or "to server") packets tee'd from MySend().
+			# The RO client already transmitted these bytes to the server;
+			# parse them locally so OpenKore tracks state transitions.
+			traceTransitionPacket("client-to-server", $msg);
+			if (length($msg) >= 2) {
+				my $sw = unpack("v", $msg);
+				if ($sw == 0x0065 || $sw == 0x0436) {
+					$incomingMessages->nextMessageMightBeAccountID() if $incomingMessages;
 				}
 			}
-
-			traceTransitionPacket("client-to-server", $msg);
-			if($self->getState() eq Network::IN_GAME || $self->getState() eq Network::CONNECTED_TO_CHAR_SERVER) {
-				$self->onClientData($msg);
-				return undef;
-			}
-			$self->{clientPackets} .= $msg;
+			$self->onClientData($msg);
 		} elsif ($type eq "K") {
 			# Keep-alive... useless.
 		}
@@ -597,32 +574,6 @@ sub hackClient {
 	message TF("Client modified in %d places.\n", $patchCount), "startup";
 }
 
-#
-# XKore::redirect([enabled])
-# enabled: Whether you want to redirect (some) console messages to the RO client.
-#
-# Enable or disable console message redirection. Or, if $enabled is not given,
-# returns whether message redirection is currently enabled.
-#sub redirect {
-#	my $arg = shift;
-#	if ($arg) {
-#		$redirect = $arg;
-#	} else {
-#		return $redirect;
-#	}
-#}
-
-#sub redirectMessages {
-#	my ($type, $domain, $level, $globalVerbosity, $message, $user_data) = @_;
-#
-#	return if ($type eq "debug" || $level > 0 || $conState != 5 || !$redirect);
-#	return if ($domain =~ /^(connection|startup|pm|publicchat|guildchat|selfchat|emotion|drop|inventory|deal)$/);
-#	return if ($domain =~ /^(attack|skill|list|info|partychat|npc)/);
-#
-#	$message =~ s/\n*$//s;
-#	$message =~ s/\n/\\n/g;
-#	main::sendMessage($messageSender, "k", $message);
-#}
 sub onClientData {
 	my ($self, $msg) = @_;
 	my $additional_data;
@@ -633,11 +584,17 @@ sub onClientData {
 	}
 	$self->decryptMessageID(\$msg);
 
+	if (length($msg) >= 2 && unpack("v", $msg) == 0x0436 && (length($msg) == 19 || length($msg) == 23)) {
+		$self->{tokenizer}->{rpackets}{'0436'}{length} = length($msg);
+	}
+
 	$msg = $self->{tokenizer}->slicePacket($msg, \$additional_data); # slice packet if needed
 
 	$self->{tokenizer}->add($msg, 1);
 
-	$messageSender->sendToServer($_) for $messageSender->process(
+	# Tee mode: MySend() already sent this client packet to the RO server.
+	# Parse it for ClientReceive state tracking without re-sending to server.
+	$messageSender->process(
 		$self->{tokenizer}, $clientPacketHandler
 	);
 

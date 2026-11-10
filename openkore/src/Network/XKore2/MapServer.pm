@@ -196,6 +196,16 @@ sub map_loaded {
 	# Do this just in case $client->{session}{dummy} was set after
 	# the user logs in.
 	$char->{ID} = $client->{session}{accountID};
+	if ($masterServer->{serverType} eq 'tRO') {
+		$self->send_tro_snapshot($client, $char);
+		$self->send_portals($client);
+		$self->send_npcs($client);
+		$self->send_monsters($client);
+		$client->send(pack('v', 0x0B1B));
+		$args->{mangle} = 2;
+		$RunOnce = 0;
+		return;
+	}
 	$self->send_player_info($client, $char);
 	$self->send_avoid_sprite_error_hack($client, $char);
 	$self->send_npc_info($client);
@@ -216,6 +226,56 @@ sub map_loaded {
 
 	$args->{mangle} = 2;
 	$RunOnce = 0;
+}
+
+sub send_tro_snapshot {
+	my ($self, $client, $char) = @_;
+	my $parser = $self->{recvPacketParser};
+	my $keys = $parser->{packet_list}{'00BD'}[2];
+	$client->send($parser->reconstruct({
+		switch => 'stats_info', map { $_ => ($char->{$_} || 0) } @$keys,
+	}));
+	for my $stat ([0, ($char->{walk_speed} || 0.15) * 1000], [5, $char->{hp}],
+		[6, $char->{hp_max}], [7, $char->{sp}], [8, $char->{sp_max}],
+		[12, $char->{points_skill}], [24, ($char->{weight} || 0) * 10],
+		[25, ($char->{weight_max} || 0) * 10], [53, $char->{attack_delay}]) {
+		$client->send(pack('v v V', 0x00B0, $stat->[0], $stat->[1] || 0));
+	}
+	$client->send(pack('v v', 0x013A, $char->{attack_range} || 1));
+	my $skills = '';
+	for my $handle (@skillsID) {
+		my $skill = $char->{skills}{$handle};
+		next unless $skill;
+		$skills .= pack('v2 x2 v3 Z24 C', $skill->{ID}, $skill->{targetType},
+			$skill->{lv}, $skill->{sp}, $skill->{range}, $handle, $skill->{up});
+	}
+	$client->send(pack('v v', 0x010F, 4 + length($skills)) . $skills);
+	if ($hotkeyList) {
+		my $hotkeys = '';
+		for my $index (0 .. 37) {
+			my $key = $hotkeyList->[$index] || {};
+			$hotkeys .= pack('C V v', $key->{type} || 0, $key->{ID} || 0, $key->{lv} || 0);
+		}
+		$client->send(pack('v C', 0x0A00, 0) . $hotkeys);
+	}
+	# tRO uses 34-byte normal items and 67-byte equipment, inside 0B08..0B0B.
+	$client->send(pack('v v C', 0x0B08, 5, 0));
+	my ($normal, $equipment) = ('', '');
+	for my $item (@{$char->inventory->getItems()}) {
+		my $stackable = $item->{type} <= 3 || $item->{type} == 6
+			|| $item->{type} == 10 || $item->{type} == 16
+			|| $item->{type} == 17 || $item->{type} == 19;
+		my $schema = $stackable ? $parser->items_stackable({switch => '0B09'})
+			: $parser->items_nonstackable({switch => '0B0A'});
+		my %record = (%$item, identified => ($item->{identified} || 0) | (($item->{broken} || 0) << 1));
+		$record{cards} ||= '';
+		$record{options} ||= '';
+		my $bytes = pack($schema->{types}, map { defined $record{$_} ? $record{$_} : 0 } @{$schema->{keys}});
+		if ($stackable) { $normal .= $bytes } else { $equipment .= $bytes }
+	}
+	$client->send(pack('v v C', 0x0B09, 5 + length($normal), 0) . $normal) if length $normal;
+	$client->send(pack('v v C', 0x0B0A, 5 + length($equipment), 0) . $equipment) if length $equipment;
+	$client->send(pack('v C C', 0x0B0B, 0, 0));
 }
 
 sub send_quest_info {
@@ -766,6 +826,7 @@ sub map_login {
 	} else {
 		$self->{sessionStore}->remove($session);
 		$client->{session} = $session;
+		$client->send(pack('v2', 0x0B18, 0)) if $masterServer->{serverType} eq 'tRO';
 
 		if (exists $self->{recvPacketParser}{packet_lut}{define_check}) {
 			$client->send($self->{recvPacketParser}->reconstruct({
@@ -786,6 +847,7 @@ sub map_login {
 		}
 
 		my $charInfo = $self->getCharInfo($session);
+		$client->send(pack('v V', 0x0ADE, 70)) if $masterServer->{serverType} eq 'tRO';
 		my $coords = '';
 		shiftPack(\$coords, $charInfo->{x}, 10);
 		shiftPack(\$coords, $charInfo->{y}, 10);
@@ -794,6 +856,9 @@ sub map_login {
 			switch => 'map_loaded',
 			syncMapSync => int time,
 			coords => $coords,
+			xSize => $self->{recvPacketParser}{packet_lut}{map_loaded} eq '02EB' ? pack('C', 5) : 5,
+			ySize => $self->{recvPacketParser}{packet_lut}{map_loaded} eq '02EB' ? pack('C', 5) : 5,
+			font => 0,
 		}));
 	}
 

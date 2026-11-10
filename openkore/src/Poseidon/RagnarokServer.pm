@@ -355,12 +355,12 @@ sub ParsePacket {
 				pack("x130");
 		} elsif($switch eq '0A76' || $self->{type}->{$config{server_type}}->{account_server_info} eq '0276') { # tRO
 			$data = pack("v", 0x0276) . # header
-				pack("v", 0x63) . # length
+				pack("v", 0x57) . # 51-byte header + 36-byte tRO server entry
 				$sessionID . $accountID . $sessionID2 .
 				pack("x30") . pack("C1", $sex) .
 				pack("x4") .
 				pack("C*", $ipElements[0], $ipElements[1], $ipElements[2], $ipElements[3]) .
-				$port .	$serverName . pack("x2") . $serverUsers . pack("x6");
+				$port .	$serverName . pack("x2") . pack("v", @{$self->clients()} - 1) . pack("x6");
 		} else {
 			$data = pack("v", 0x0069) . # header
 				pack("v", 0x4F) . # length
@@ -1059,10 +1059,15 @@ sub SendCharacterList
 sub SendMapLogin {
 	my ($self, $client, $msg, $index) = @_;
 
+	if ($self->{type}->{$config{server_type}}->{sendInventoryExpansionResult}) {
+		SendData($client, pack("v2", 0x0B18, 0x0000));
+	}
+
 	SendData($client, pack("v a4", 0x0283, $accountID));
 
-	if ( $config{server_type} =~ /^kRO/ ) { # kRO
-		SendData($client, pack("v", 0x0ADE) . pack("V", 0x00));
+	if ( $config{server_type} =~ /^kRO/ || $self->{type}->{$config{server_type}}->{sendOverweightPercent} ) { # modern clients
+		my $percent = $self->{type}->{$config{server_type}}->{overweightPercent} || 0;
+		SendData($client, pack("v", 0x0ADE) . pack("V", $percent));
 	}
 
 	# mapLogin packet
@@ -1071,14 +1076,20 @@ sub SendMapLogin {
 		SendData($client, pack("v", 0x0A18) . pack("V", getTickCount) . getCoordString($posX, $posY, 1) . pack("C*", 0x00, 0x00) .  pack("C*", 0x00, 0x00, 0x01));
 	} elsif ($self->{type}->{$config{server_type}}->{map_loaded} eq '02EB') {
 		# '02EB' => ['map_loaded', 'V a3 a a v', [qw(syncMapSync coords xSize ySize font)]], # 13
-		SendData($client, pack("v", 0x02EB) . pack("V", getTickCount) . getCoordString($posX, $posY, 1) . pack("C*", 0x00, 0x00) .  pack("C*", 0x00, 0x00));
+		my $size = $self->{type}->{$config{server_type}}->{mapCharacterSize} || 0;
+		SendData($client, pack("v", 0x02EB) . pack("V", getTickCount) . getCoordString($posX, $posY, 1) . pack("C*", $size, $size) . pack("v", 0x0000));
 	} else {
 		# '0073' => ['map_loaded','x4 a3',[qw(coords)]]
 		SendData($client, pack("v", 0x0073) . pack("V", getTickCount) . getCoordString($posX, $posY, 1) . pack("C*", 0x00, 0x00));
 	}
 
 	my $data;
-	if ($clientdata{$index}{mode}) {
+	if ($self->{type}->{$config{server_type}}->{sendBasicSkillList}) {
+		# Current tRO sends one NV_BASIC entry before the initial status packets.
+		$data = pack("C2 v1", 0x0F, 0x01, 41) .
+			pack("v2 x2 v3 a24 C1", 1, 0, 8, 0, 1, "NV_BASIC", 0);
+		SendData($client, $data);
+	} elsif ($clientdata{$index}{mode}) {
 		if ($self->{type}->{$config{server_type}}->{map_loaded} eq '0B32') {
 			$data = pack("v", 0x0B32).
 				pack("v", 94) .
@@ -1116,7 +1127,8 @@ sub SendMapLogin {
 	$client->{connectedToMap} = 1;
 
 	# TODO: fixme, this should be made only after 007D, but for some reason some clients are not sending this packet
-	PerformMapLoadedTasks($self, $client, $msg, $index);
+	PerformMapLoadedTasks($self, $client, $msg, $index)
+		unless $self->{type}->{$config{server_type}}->{skipMapLoadedTasks};
 }
 
 sub SendGoToCharSelection

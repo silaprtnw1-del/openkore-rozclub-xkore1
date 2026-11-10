@@ -80,6 +80,21 @@ sub new {
 	return $self;
 }
 
+sub parse_master_login {
+	my ($self, $args) = @_;
+	return unless exists $args->{password_rijndael};
+	my $rijndael = $self->_login_cipher;
+	$args->{password} = unpack('Z32', $rijndael->Decrypt($args->{password_rijndael}, undef, 32, 0));
+}
+
+sub _login_cipher {
+	my $key = pack('H*', '06a9214036b8a15b512e03d53412000606a9214036b8a15b512e03d534120006');
+	my $chain = pack('H*', '3dafba429d9eb430b422da802c9fac413dafba429d9eb430b422da802c9fac41');
+	my $rijndael = Utils::Rijndael->new;
+	$rijndael->MakeKey($key, $chain, 32, 32);
+	return $rijndael;
+}
+
 sub reconstruct_master_login {
 	my ($self, $args) = @_;
 
@@ -95,11 +110,8 @@ sub reconstruct_master_login {
 			$args->{password_md5_hex} = $_->hexdigest;
 		}
 
-		my $key = pack('C32', (0x06, 0xA9, 0x21, 0x40, 0x36, 0xB8, 0xA1, 0x5B, 0x51, 0x2E, 0x03, 0xD5, 0x34, 0x12, 0x00, 0x06, 0x06, 0xA9, 0x21, 0x40, 0x36, 0xB8, 0xA1, 0x5B, 0x51, 0x2E, 0x03, 0xD5, 0x34, 0x12, 0x00, 0x06));
-		my $chain = pack('C32', (0x3D, 0xAF, 0xBA, 0x42, 0x9D, 0x9E, 0xB4, 0x30, 0xB4, 0x22, 0xDA, 0x80, 0x2C, 0x9F, 0xAC, 0x41, 0x3D, 0xAF, 0xBA, 0x42, 0x9D, 0x9E, 0xB4, 0x30, 0xB4, 0x22, 0xDA, 0x80, 0x2C, 0x9F, 0xAC, 0x41));
 		my $in = pack('a32', $args->{password});
-		my $rijndael = Utils::Rijndael->new;
-		$rijndael->MakeKey($key, $chain, 32, 32);
+		my $rijndael = $self->_login_cipher;
 		$args->{password_rijndael} = $rijndael->Encrypt($in, undef, 32, 0);
 	}
 }

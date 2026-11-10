@@ -7,7 +7,7 @@
 #ifndef NULL
 	#define NULL ((void *) 0)
 #endif
-#define XKORE_SERVER_PORT 2350
+#define XKORE_SERVER_PORT 2351
 typedef struct {
 	char ID;
 	unsigned short len;
@@ -23,6 +23,7 @@ typedef int (WINAPI *MySendProc) (SOCKET s, char *buf, int len, int flags);
 typedef int (WINAPI *MySendToProc) (SOCKET s, const char* buf, int len, int flags, struct sockaddr* to, int tolen);
 typedef int (WINAPI *MyConnectProc) (SOCKET s, const struct sockaddr* name, int namelen);
 typedef int (WINAPI *MySelectProc) (int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, const struct timeval *timeout);
+typedef int (WINAPI *MyIoctlSocketProc) (SOCKET s, long cmd, u_long *argp);
 typedef int (WINAPI *MyWSARecvProc) (SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesRecvd, LPDWORD lpFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 typedef int (WINAPI *MyWSARecvFromProc) (SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesRecvd, LPDWORD lpFlags, struct sockaddr* lpFrom, LPINT lpFromlen, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 typedef int (WINAPI *MyWSASendProc) (SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesSent, DWORD dwFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
@@ -36,12 +37,18 @@ extern MySendProc		OriginalSendProc;
 extern MySendToProc		OriginalSendToProc;
 extern MyConnectProc		OriginalConnectProc;
 extern MySelectProc		OriginalSelectProc;
+extern MyIoctlSocketProc	OriginalIoctlSocketProc;
 extern MyWSARecvProc		OriginalWSARecvProc;
 extern MyWSARecvFromProc	OriginalWSARecvFromProc;
 extern MyWSASendProc		OriginalWSASendProc;
 extern MyWSASendToProc		OriginalWSASendToProc;
 extern MyWSAAsyncSelectProc	OriginalWSAAsyncSelectProc;
 extern MyGetProcAddressProc	OriginalGetProcAddressProc;
+
+extern MyRecvProc		RealRecvProc;
+extern MySendProc		RealSendProc;
+extern MySelectProc		RealSelectProc;
+extern MyConnectProc		RealConnectProc;
 
 extern bool enableDebug;
 
@@ -55,6 +62,7 @@ SOCKET createSocket (int port);
 bool isConnected (SOCKET s);
 bool dataWaiting (SOCKET s);
 int readSocket (SOCKET s, char *buf, int len);
+PROC GetUnpatchedWinsockProc (PSTR FunctionName);
 PROC HookImportedFunction (HMODULE hModule, PSTR FunctionModule, PSTR FunctionName, PROC pfnNewProc);
 
 void debugInit ();

@@ -1620,6 +1620,8 @@ sub processAutoStorage {
 					my $item = $char->inventory->[$i];
 					next if $item->{equipped};
 					next if ($item->{broken} && $item->{type} == 7); # dont store pet egg in use
+					# ROZCLUB fix (2026-11-06): do not retry items the Kafra refused in the last 30 minutes
+					next if ($ai_v{storage_failed}{$item->{nameID}} && !timeOut($ai_v{storage_failed}{$item->{nameID}}, 1800));
 
 					if (defined($args->{lastInventoryCount}) &&  defined($args->{lastNameID}) && defined($args->{lastAmount}) &&
 					    $args->{lastNameID} == $item->{nameID} &&
@@ -1627,6 +1629,7 @@ sub processAutoStorage {
 						$args->{lastAmount} == $item->{amount}
 					) {
 						error TF("Unable to store %s.\n", $item->{name});
+						$ai_v{storage_failed}{$item->{nameID}} = time;
 
 						if ($char->storage->getByName($item->{name})) {
 							Plugins::callHook('AI_storage_item_full', {
@@ -1960,6 +1963,9 @@ sub processAutoSell {
 				if (timeOut($args->{'sentNpcTalk_time'}, $timeout{ai_sellAuto_wait_giveup_npc}{timeout})) {
 					$args->{'error'} = 'Npc did not respond';
 					$args->{'done'} = 1;
+					# ROZCLUB fix (2026-11-06): close the shop server-side, otherwise the
+					# character stays locked in the NPC shop (can't walk or use Fly Wing).
+					cancelNpcBuySell();
 				}
 				return;
 
@@ -2196,6 +2202,9 @@ sub processAutoBuy {
 			if (timeOut($args->{'sentNpcTalk_time'}, $timeout{ai_buyAuto_wait_giveup_npc}{timeout})) {
 				$args->{'error'} = 'Npc did not respond';
 				$args->{'done'} = 1;
+				# ROZCLUB fix (2026-11-06): close the shop server-side, otherwise the
+				# character stays locked in the NPC shop (can't walk or use Fly Wing).
+				cancelNpcBuySell();
 			}
 			return;
 

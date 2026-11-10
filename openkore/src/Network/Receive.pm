@@ -1128,7 +1128,7 @@ sub reconstruct_account_server_info {
 
 	my $serverInfo;
 
-	if ($args->{switch} eq '0B60') { # tRO 2020
+	if ($args->{switch} eq '0B60' || ($self->{packet_lut}{$args->{switch}} || '') eq '0B60') { # tRO 2020
 		$serverInfo = {
 			len => 164,
 			types => 'a4 v Z20 v3 a128 V',
@@ -7735,7 +7735,11 @@ sub npc_talk_close {
 		return;
 	}
 
-	return if (exists $ai_v{'npc_talk'}{'talk'} && $ai_v{'npc_talk'}{'talk'} eq 'buy_or_sell');
+	# ROZCLUB fix (2026-11-06): script shop NPCs (e.g. Tool Dealer#pay3) send
+	# 00B6 close right after the buy/sell list. The shop window stays usable on
+	# the server, but switching to 'close' here made sellAuto/buyAuto give up
+	# with "Npc did not respond" before sending the item list.
+	return if (exists $ai_v{'npc_talk'}{'talk'} && $ai_v{'npc_talk'}{'talk'} =~ /^(buy_or_sell|store|sell)$/);
 
 	my $ID = $args->{ID};
 	my $name = getNPCName($ID);
@@ -8642,9 +8646,10 @@ sub party_leader {
 
 sub party_hp_info {
 	my ($self, $args) = @_;
+	return unless $char && ref($char) && $char->{party};
 	my $ID = $args->{ID};
 
-	if ($char->{party}{users}{$ID}) {
+	if ($char->{party}{users} && $char->{party}{users}{$ID}) {
 		$char->{party}{users}{$ID}{hp} = $args->{hp};
 		$char->{party}{users}{$ID}{hp_max} = $args->{hp_max};
 	}
@@ -8697,6 +8702,7 @@ sub party_invite_result {
 
 sub party_leave {
 	my ($self, $args) = @_;
+	return unless $char && ref($char) && $char->{party};
 
 	my $ID = $args->{ID};
 	my $actor = $char->{party}{users}{$ID}; # bytesToString($args->{name})
@@ -8720,10 +8726,11 @@ sub party_leave {
 
 sub party_location {
 	my ($self, $args) = @_;
+	return unless $char && ref($char) && $char->{party};
 
 	my $ID = $args->{ID};
 
-	if ($char->{party}{users}{$ID}) {
+	if ($char->{party}{users} && $char->{party}{users}{$ID}) {
 		$char->{party}{users}{$ID}{online} = 1;
 
 		if ($args->{x} >= 65535 || $args->{y} >= 65535) {
@@ -8740,9 +8747,10 @@ sub party_location {
 }
 sub party_organize_result {
 	my ($self, $args) = @_;
+	return unless $char && ref($char) && $char->{party};
 
 	unless ($args->{fail}) {
-		$char->{party}{users}{$accountID}{admin} = 1 if $char->{party}{users}{$accountID};
+		$char->{party}{users}{$accountID}{admin} = 1 if $char->{party}{users} && $char->{party}{users}{$accountID};
 	} elsif ($args->{fail} == 1) {
 		warning T("Can't organize party - party name exists\n");
 	} elsif ($args->{fail} == 2) {
@@ -8759,8 +8767,9 @@ sub party_show_picker {
 
 	# wtf the server sends this packet for your own character? (rRo)
 	return if $args->{sourceID} eq $accountID;
+	return unless $char && ref($char);
 
-	my $string = ($char->{party}{users}{$args->{sourceID}} && %{$char->{party}{users}{$args->{sourceID}}}) ? $char->{party}{users}{$args->{sourceID}}->name() : $args->{sourceID};
+	my $string = ($char->{party} && $char->{party}{users} && $char->{party}{users}{$args->{sourceID}} && %{$char->{party}{users}{$args->{sourceID}}}) ? $char->{party}{users}{$args->{sourceID}}->name() : $args->{sourceID};
 	my $item = {};
 	$item->{nameID} = $args->{nameID};
 	$item->{identified} = $args->{identified};
@@ -8839,8 +8848,9 @@ sub party_users_info {
 # 0AB2 <GID>.L <dead>.B
 sub party_dead {
 	my ($self, $args) = @_;
+	return unless $char && ref($char) && $char->{party};
 
-	my $string = ($char->{party}{users}{$args->{ID}} && %{$char->{party}{users}{$args->{ID}}}) ? $char->{party}{users}{$args->{ID}}->name() : $args->{ID};
+	my $string = ($char->{party}{users} && $char->{party}{users}{$args->{ID}} && %{$char->{party}{users}{$args->{ID}}}) ? $char->{party}{users}{$args->{ID}}->name() : $args->{ID};
 
 	# 0x0 = alive
 	# 0x1 = dead
@@ -9795,8 +9805,9 @@ sub overweight_percent {
 
 sub partylv_info {
 	my ($self, $args) = @_;
+	return unless $char && ref($char) && $char->{party};
 	my $ID = $args->{ID};
-	if ($char->{party}{users}{$ID}) {
+	if ($char->{party}{users} && $char->{party}{users}{$ID}) {
 		$char->{party}{users}{$ID}{jobID} = $args->{job};
 		$char->{party}{users}{$ID}{lv} = $args->{lv};
 	}

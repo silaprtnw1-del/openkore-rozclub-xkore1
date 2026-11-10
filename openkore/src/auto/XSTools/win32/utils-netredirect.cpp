@@ -20,7 +20,7 @@ unpackPacket (const char *data, int len, int &next)
 	packet = (Packet *) calloc (sizeof (Packet), 1);
 	packet->ID = (unsigned char) data[0];
 	memcpy (&(packet->len), data + 1, 2);
-	if (len < packet->len) {
+	if (len < packet->len + 3) {
 		free (packet);
 		return NULL;
 	}
@@ -32,31 +32,55 @@ unpackPacket (const char *data, int len, int &next)
 }
 
 
+PROC
+GetUnpatchedWinsockProc (PSTR FunctionName)
+{
+	HMODULE hWs2 = GetModuleHandleA ("WS2_32.DLL");
+	if (!hWs2)
+		hWs2 = LoadLibraryA ("WS2_32.DLL");
+	if (!hWs2)
+		return NULL;
+
+	BYTE *p = (BYTE *) (OriginalGetProcAddressProc
+		? OriginalGetProcAddressProc (hWs2, FunctionName)
+		: GetProcAddress (hWs2, FunctionName));
+	if (!p)
+		return NULL;
+
+	/* If d3d9.dll installed a Windows hotpatch short-jump (EB F9 -> jmp -5)
+	 * at the function entry point in ws2_32.dll, advance 2 bytes to the real
+	 * post-prologue body so internal XKore loopback traffic does not enter
+	 * d3d9.dll's packet hooks. */
+	if (p[0] == 0xEB && p[1] == 0xF9)
+		return (PROC) (p + 2);
+
+	return (PROC) p;
+}
+
+
 SOCKET
 createSocket (int port)
 {
 	sockaddr_in addr;
 	SOCKET sock;
 	DWORD arg = 1;
+	MyConnectProc connectFn = RealConnectProc ? RealConnectProc : OriginalConnectProc;
 
 	sock = socket (AF_INET, SOCK_STREAM, 0);
 	if (sock == INVALID_SOCKET)
 		return INVALID_SOCKET;
-	// Set to non-blocking mode
-	ioctlsocket (sock, FIONBIO, &arg);
 
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons (port);
 	addr.sin_addr.s_addr = inet_addr ("127.0.0.1");
-	while (OriginalConnectProc (sock, (struct sockaddr *) &addr, sizeof (sockaddr_in)) == SOCKET_ERROR) {
-		if (WSAGetLastError () == WSAEISCONN)
-			break;
-		else if (WSAGetLastError () != WSAEWOULDBLOCK) {
-			closesocket (sock);
-			return INVALID_SOCKET;
-		} else
-			Sleep (10);
+	/* This is always a loopback connection. Complete it in blocking mode,
+	 * then switch to non-blocking I/O. */
+	if (connectFn (sock, (struct sockaddr *) &addr,
+			sizeof (sockaddr_in)) == SOCKET_ERROR) {
+		closesocket (sock);
+		return INVALID_SOCKET;
 	}
+	ioctlsocket (sock, FIONBIO, &arg);
 
 	return sock;
 }
@@ -68,12 +92,13 @@ isConnected (SOCKET s)
 	fd_set fds;
 	long count;
 	timeval tv;
+	MySelectProc selectFn = RealSelectProc ? RealSelectProc : OriginalSelectProc;
 
 	tv.tv_sec = 0;
 	tv.tv_usec = 1;
 	FD_ZERO (&fds);
 	FD_SET (s, &fds);
-	count = OriginalSelectProc (1, NULL, &fds, NULL, &tv);
+	count = selectFn (1, NULL, &fds, NULL, &tv);
 	return (bool) count;
 }
 
@@ -84,19 +109,21 @@ dataWaiting (SOCKET s)
 	fd_set fds;
 	long count;
 	timeval tv;
+	MySelectProc selectFn = RealSelectProc ? RealSelectProc : OriginalSelectProc;
 
 	tv.tv_sec = 0;
 	tv.tv_usec = 1;
 	FD_ZERO (&fds);
 	FD_SET (s, &fds);
-	count = OriginalSelectProc (1, &fds, NULL, NULL, &tv);
+	count = selectFn (1, &fds, NULL, NULL, &tv);
 	return (bool) count;
 }
 
 int
 readSocket (SOCKET s, char *buf, int len)
 {
-	int ret = OriginalRecvProc (s, buf, len, 0);
+	MyRecvProc recvFn = RealRecvProc ? RealRecvProc : OriginalRecvProc;
+	int ret = recvFn (s, buf, len, 0);
 
 	if (ret == 0)
 		return SF_CLOSED;
@@ -111,11 +138,9 @@ readSocket (SOCKET s, char *buf, int len)
 		return SF_CLOSED;
 }
 
-// This function "replaces" a function with another function
-// So, for example, if you do this:
-//   OriginalWSASendProc = (MyWSASendProc) HookImportedFunction (GetModuleHandle (0), "WS2_32.DLL", "WSASend", (PROC) MyWSASend);
-// This will "replaces" WSASend() with MyWSASend(). Every time the app calls WSASend(), MyWSASend() gets called instead.
-// This function returns a pointer to the original function.
+// Replace an imported function in hModule's IAT, matching either by OriginalFirstThunk
+// import name (so slots already hooked by d3d9.dll are still found and chained) or by
+// current FirstThunk address.
 PROC
 HookImportedFunction (HMODULE hModule,		// Module to intercept calls from
 			PSTR FunctionModule,	// The dll file that contains the function you want to hook
@@ -127,7 +152,6 @@ HookImportedFunction (HMODULE hModule,		// Module to intercept calls from
 	IMAGE_DOS_HEADER *pDosHeader;
 	IMAGE_NT_HEADERS *pNTHeader;
 	IMAGE_IMPORT_DESCRIPTOR *pImportDesc;
-	IMAGE_THUNK_DATA *pThunk;
 
 	if (IsBadCodePtr (pfnNewProc)) return NULL;
 	if (OriginalGetProcAddressProc) {
@@ -152,69 +176,56 @@ HookImportedFunction (HMODULE hModule,		// Module to intercept calls from
 	if ( pNTHeader->Signature != IMAGE_NT_SIGNATURE )
 		return NULL;
 
-	pImportDesc = MakePtr(PIMAGE_IMPORT_DESCRIPTOR, pDosHeader,
-			pNTHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
+	DWORD importRva = pNTHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress;
+	if ( !importRva )
+		return pfnOriginalProc;
 
+	pImportDesc = MakePtr(PIMAGE_IMPORT_DESCRIPTOR, pDosHeader, importRva);
 	if ( pImportDesc == (PIMAGE_IMPORT_DESCRIPTOR)pNTHeader )
 		return NULL;
 
+	PROC pfnChainedOriginal = pfnOriginalProc;
 
-	while ( pImportDesc->Name ) {
+	for ( ; pImportDesc->Name; pImportDesc++ ) {
 		PSTR pszModName = MakePtr(PSTR, pDosHeader, pImportDesc->Name);
-		if ( stricmp(pszModName, FunctionModule) == 0 )
-			break;
-		pImportDesc++;
-	}
+		if ( stricmp(pszModName, FunctionModule) != 0 )
+			continue;
 
-	pNTHeader = MakePtr(PIMAGE_NT_HEADERS, pDosHeader, pDosHeader->e_lfanew);
-	if ( pImportDesc->Name == 0 )
-		return 0;
+		PIMAGE_THUNK_DATA pThunk = MakePtr(PIMAGE_THUNK_DATA, pDosHeader, pImportDesc->FirstThunk);
+		PIMAGE_THUNK_DATA pOrigThunk = pImportDesc->OriginalFirstThunk
+			? MakePtr(PIMAGE_THUNK_DATA, pDosHeader, pImportDesc->OriginalFirstThunk)
+			: NULL;
 
-	pThunk = MakePtr(PIMAGE_THUNK_DATA, pDosHeader, pImportDesc->FirstThunk);
+		for ( ; pThunk->u1.Function; pThunk++, (pOrigThunk ? pOrigThunk++ : NULL) ) {
+			bool matched = false;
 
-	MEMORY_BASIC_INFORMATION mbi_thunk;
-	while ( pThunk->u1.Function ) {
-		if ( (DWORD)pThunk->u1.Function == (DWORD)pfnOriginalProc) {
-			VirtualQuery(pThunk, &mbi_thunk, sizeof(MEMORY_BASIC_INFORMATION));
-			if (FALSE == VirtualProtect(mbi_thunk.BaseAddress, mbi_thunk.RegionSize, PAGE_READWRITE, &mbi_thunk.Protect))
-				return NULL;
-			DWORD * pTemp = (DWORD*)&pThunk->u1.Function;
-			*pTemp = (DWORD)(pfnNewProc);
-
-			VirtualProtect(mbi_thunk.BaseAddress, mbi_thunk.RegionSize,mbi_thunk.Protect, NULL);
-
-			break;
-		}
-		pThunk++;
-	}
-
-	SYSTEM_INFO si;
-	DWORD i;
-	byte *data = NULL;
-	GetSystemInfo(&si);
-	LPVOID lpMem = si.lpMinimumApplicationAddress;
-	while (lpMem < si.lpMaximumApplicationAddress) {
-		VirtualQuery(lpMem, &mbi_thunk,sizeof(MEMORY_BASIC_INFORMATION));
-
-		if ((DWORD)mbi_thunk.BaseAddress <= (DWORD)pDosHeader + pNTHeader->OptionalHeader.SizeOfImage
-			&& mbi_thunk.State == MEM_COMMIT && mbi_thunk.RegionSize > 0 && !(mbi_thunk.Protect & PAGE_GUARD)) {
-
-			if (VirtualProtect(mbi_thunk.BaseAddress, mbi_thunk.RegionSize, PAGE_READWRITE, &mbi_thunk.Protect)) {
-				data = (byte*)mbi_thunk.BaseAddress;
-				for (i = 0; i < mbi_thunk.RegionSize - 3; i++) {
-
-					if (*(DWORD*)(data+i) == (DWORD)pfnOriginalProc) {
-						*(DWORD*)(data+i) = (DWORD)pfnNewProc;
-					}
-					
+			if ( (DWORD)pThunk->u1.Function == (DWORD)pfnOriginalProc ) {
+				matched = true;
+			} else if ( pOrigThunk && pOrigThunk->u1.AddressOfData && !(pOrigThunk->u1.Ordinal & IMAGE_ORDINAL_FLAG32) ) {
+				PIMAGE_IMPORT_BY_NAME pByName = MakePtr(PIMAGE_IMPORT_BY_NAME, pDosHeader, pOrigThunk->u1.AddressOfData);
+				if ( !IsBadReadPtr(pByName, sizeof(WORD) + 1) && stricmp((char *)pByName->Name, FunctionName) == 0 ) {
+					matched = true;
 				}
-			VirtualProtect(mbi_thunk.BaseAddress, mbi_thunk.RegionSize,mbi_thunk.Protect, NULL);
+			}
+
+			if ( matched ) {
+				PROC currentTarget = (PROC)pThunk->u1.Function;
+				if ( currentTarget && currentTarget != pfnNewProc )
+					pfnChainedOriginal = currentTarget;
+
+				MEMORY_BASIC_INFORMATION mbi_thunk;
+				VirtualQuery(pThunk, &mbi_thunk, sizeof(MEMORY_BASIC_INFORMATION));
+				if (VirtualProtect(mbi_thunk.BaseAddress, mbi_thunk.RegionSize, PAGE_READWRITE, &mbi_thunk.Protect)) {
+					DWORD *pTemp = (DWORD *)&pThunk->u1.Function;
+					*pTemp = (DWORD)pfnNewProc;
+					DWORD dummy;
+					VirtualProtect(mbi_thunk.BaseAddress, mbi_thunk.RegionSize, mbi_thunk.Protect, &dummy);
+				}
 			}
 		}
-		lpMem = MakePtr(LPVOID, mbi_thunk.BaseAddress, mbi_thunk.RegionSize+1);
 	}
 
-	return pfnOriginalProc;
+	return pfnChainedOriginal;
 }
 
 

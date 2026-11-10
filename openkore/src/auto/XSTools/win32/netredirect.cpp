@@ -1,7 +1,8 @@
 /*
  * This DLL is "injected" into the RO client's address space.
- * Once injected, we intercept all network traffic and redirect
- * some of it to Kore.
+ * Once injected, we intercept all network traffic and tee a copy
+ * of RO server/client packets to OpenKore while letting d3d9.dll
+ * handle the Map Server stream cipher and THAA overlay frames.
  */
 
 #include <stdio.h>
@@ -17,12 +18,18 @@ MyRecvFromProc		OriginalRecvFromProc	= (MyRecvFromProc) recvfrom;
 MySendToProc		OriginalSendToProc	= (MySendToProc) sendto;
 MyConnectProc		OriginalConnectProc	= (MyConnectProc) connect;
 MySelectProc		OriginalSelectProc	= (MySelectProc) select;
+MyIoctlSocketProc	OriginalIoctlSocketProc	= (MyIoctlSocketProc) ioctlsocket;
 MyWSARecvProc		OriginalWSARecvProc	= (MyWSARecvProc) WSARecv;
 MyWSARecvFromProc	OriginalWSARecvFromProc	= (MyWSARecvFromProc) WSARecvFrom;
 MyWSASendProc		OriginalWSASendProc	= (MyWSASendProc) WSASend;
 MyWSASendToProc		OriginalWSASendToProc	= (MyWSASendToProc) WSASendTo;
 MyWSAAsyncSelectProc	OriginalWSAAsyncSelectProc = (MyWSAAsyncSelectProc) WSAAsyncSelect;
 MyGetProcAddressProc	OriginalGetProcAddressProc = (MyGetProcAddressProc) GetProcAddress;
+
+MyRecvProc		RealRecvProc		= NULL;
+MySendProc		RealSendProc		= NULL;
+MySelectProc		RealSelectProc		= NULL;
+MyConnectProc		RealConnectProc		= NULL;
 
 bool enableDebug = false;
 
@@ -41,10 +48,34 @@ static CRITICAL_SECTION CS_ro;
 
 static CRITICAL_SECTION CS_rosend;
 static CRITICAL_SECTION CS_send;
-static string roSendBuf("");	// Data to send to the RO client
-static string xkoreSendBuf("");	// Data to send to the X-Kore server
+static string roSendBuf("");	// Synthetic packets injected by Kore for the RO client
+static string xkoreSendBuf("");	// Tee'd packets to send to the X-Kore server
 
-#define SLEEP_TIME 10
+#define SLEEP_TIME 5
+
+
+static void
+queueToKore (char frameID, const char *data, int len)
+{
+	if (!data || len <= 0)
+		return;
+
+	EnterCriticalSection (&CS_send);
+	int offset = 0;
+	while (offset < len) {
+		int chunk = len - offset;
+		if (chunk > 32768)
+			chunk = 32768;
+		unsigned short sLen = (unsigned short) chunk;
+		char hdr[3];
+		hdr[0] = frameID;
+		memcpy (hdr + 1, &sLen, 2);
+		xkoreSendBuf.append (hdr, 3);
+		xkoreSendBuf.append (data + offset, chunk);
+		offset += chunk;
+	}
+	LeaveCriticalSection (&CS_send);
+}
 
 
 // Process a packet that the X-Kore server sent us
@@ -52,21 +83,20 @@ static void
 processPacket (Packet *packet)
 {	
 	switch (packet->ID) {
-	case 'S': // Send a packet to the RO server
+	case 'S': // Send a bot-originated packet to the RO server (through d3d9.dll's send hook)
 		EnterCriticalSection (&CS_ro);
-		if (roServer != INVALID_SOCKET && isConnected (roServer))
+		if (roServer != INVALID_SOCKET && packet->len > 0)
 			OriginalSendProc (roServer, packet->data, packet->len, 0);
 		LeaveCriticalSection (&CS_ro);
 		break;
 
-	case 'R': // Fool the RO client into thinking that we got a packet from the RO server
-		// We copy the data in this packet into a string
-		// Next time the RO client calls recv(), this packet will be returned, along with
-		// whatever data the RO server sent
-		EnterCriticalSection (&CS_rosend);
-		roSendBuf.append (packet->data, packet->len);
-		LeaveCriticalSection (&CS_rosend);
-		dataAvailableFromKore2 = true;
+	case 'R': // Inject a synthetic packet into the RO client's recv stream
+		if (packet->len > 0) {
+			EnterCriticalSection (&CS_rosend);
+			roSendBuf.append (packet->data, packet->len);
+			LeaveCriticalSection (&CS_rosend);
+			dataAvailableFromKore2 = true;
+		}
 		break;
 
 	case 'K': default: // Keep-alive
@@ -76,11 +106,10 @@ processPacket (Packet *packet)
 
 // Handles the connection between the RO client (this process) and the X-Kore server
 // Note that this function is run in a thread and never exits
-static void
-koreConnectionMain ()
+static DWORD WINAPI
+koreConnectionMain (LPVOID)
 {
 	#define BUF_SIZE 1024 * 32
-	//#define TIMEOUT 10000
 	#define TIMEOUT 600000
 	#define PING_INTERVAL 5000
 	#define RECONNECT_INTERVAL 3000
@@ -100,13 +129,14 @@ koreConnectionMain ()
 	memcpy (pingPacket + 1, &pingPacketLength, 2);
 
 	while (1) {
+		MySendProc koreSendFn = RealSendProc ? RealSendProc : OriginalSendProc;
 		bool isAlive;
 		bool isAliveChanged = false;
 
 		// Attempt to connect to the X-Kore server if necessary
 		EnterCriticalSection (&CS_koreClientIsAlive);
 		koreClientIsAlive = koreClient != INVALID_SOCKET;
-		isAlive = koreClientIsAlive; // keep a local copy of that variable so we don't have to enter critical sections over and over
+		isAlive = koreClientIsAlive;
 		LeaveCriticalSection (&CS_koreClientIsAlive);
 
 		if ((!isAlive || !isConnected (koreClient) || GetTickCount () - koreClientTimeout > TIMEOUT)
@@ -147,7 +177,6 @@ koreConnectionMain ()
 
 				koreClientRecvBuf.append (buf, ret);
 				while ((packet = unpackPacket (koreClientRecvBuf.c_str (), koreClientRecvBuf.size (), next))) {
-					// Packet is complete
 					processPacket (packet);
 					free (packet);
 					koreClientRecvBuf.erase (0, next);
@@ -157,6 +186,7 @@ koreConnectionMain ()
 					EnterCriticalSection (&CS_dataAvailableFromKore);
 					dataAvailableFromKore = true;
 					LeaveCriticalSection (&CS_dataAvailableFromKore);
+					dataAvailableFromKore2 = false;
 				}
 
 				// Update timeout
@@ -165,37 +195,26 @@ koreConnectionMain ()
 		}
 
 
-		// Check whether we have data to send to the X-Kore server
-		// This data originates from the RO client and is supposed to go to the real RO server
+		// Flush tee'd packets to the X-Kore server using RealSendProc so d3d9.dll ignores koreClient
 		EnterCriticalSection (&CS_send);
 		if (xkoreSendBuf.size ()) {
 			if (isAlive) {
-				OriginalSendProc (koreClient, (char *) xkoreSendBuf.c_str (), xkoreSendBuf.size (), 0);
-
-			} else {
-				Packet *packet;
-				int next;
-
-				// Kore is not running; send it to the RO server instead,
-				// if this packet is supposed to go to the RO server ('S')
-				// Ignore packets that are meant for Kore ('R')
-				EnterCriticalSection (&CS_ro);
-				while ((packet = unpackPacket (xkoreSendBuf.c_str (), xkoreSendBuf.size (), next))) {
-					if (packet->ID == 'S')
-						OriginalSendProc (roServer, (char *) packet->data, packet->len, 0);
-					free (packet);
-					xkoreSendBuf.erase (0, next);
+				int sent = koreSendFn (koreClient, (char *) xkoreSendBuf.c_str (), xkoreSendBuf.size (), 0);
+				if (sent > 0) {
+					xkoreSendBuf.erase (0, sent);
+				} else if (sent == SOCKET_ERROR && WSAGetLastError () != WSAEWOULDBLOCK) {
+					xkoreSendBuf.erase ();
 				}
-				LeaveCriticalSection (&CS_ro);
+			} else {
+				xkoreSendBuf.erase ();
 			}
-			xkoreSendBuf.erase ();
 		}
 		LeaveCriticalSection (&CS_send);
 
 
 		// Ping the X-Kore server to keep the connection alive
-		if (koreClientIsAlive && GetTickCount () - koreClientPingTimeout > PING_INTERVAL) {
-			OriginalSendProc (koreClient, pingPacket, 3, 0);
+		if (isAlive && GetTickCount () - koreClientPingTimeout > PING_INTERVAL) {
+			koreSendFn (koreClient, pingPacket, 3, 0);
 			koreClientPingTimeout = GetTickCount ();
 		}
 
@@ -237,59 +256,88 @@ MyWSARecvFrom (SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumb
 int WINAPI
 MySelect (int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds, const struct timeval *timeout)
 {
-	EnterCriticalSection (&CS_dataAvailableFromKore);
-	if (dataAvailableFromKore) {
-		dataAvailableFromKore = false;
-		LeaveCriticalSection (&CS_dataAvailableFromKore);
+	SOCKET currentRo = INVALID_SOCKET;
+	EnterCriticalSection (&CS_ro);
+	currentRo = roServer;
+	LeaveCriticalSection (&CS_ro);
+
+	EnterCriticalSection (&CS_rosend);
+	bool hasInjected = (roSendBuf.size () > 0);
+	LeaveCriticalSection (&CS_rosend);
+
+	if (hasInjected && readfds && currentRo != INVALID_SOCKET && FD_ISSET (currentRo, readfds)) {
+		FD_ZERO (readfds);
+		FD_SET (currentRo, readfds);
+		if (writefds)
+			FD_ZERO (writefds);
+		if (exceptfds)
+			FD_ZERO (exceptfds);
 		return 1;
 	}
-	LeaveCriticalSection (&CS_dataAvailableFromKore);
+
 	return OriginalSelectProc(nfds, readfds, writefds, exceptfds, timeout);
+}
+
+int WINAPI
+MyIoctlSocket (SOCKET s, long cmd, u_long *argp)
+{
+	int ret = OriginalIoctlSocketProc (s, cmd, argp);
+	if (ret == 0 && cmd == (long)FIONREAD && argp) {
+		SOCKET currentRo = INVALID_SOCKET;
+		EnterCriticalSection (&CS_ro);
+		currentRo = roServer;
+		LeaveCriticalSection (&CS_ro);
+
+		if (s == currentRo && currentRo != INVALID_SOCKET) {
+			EnterCriticalSection (&CS_rosend);
+			u_long extra = (u_long) roSendBuf.size ();
+			LeaveCriticalSection (&CS_rosend);
+			*argp += extra;
+		}
+	}
+	return ret;
 }
 
 int WINAPI
 MySend (SOCKET s, char* buf, int len, int flags)
 {
-	int ret;
+	if (s == koreClient) {
+		MySendProc koreSendFn = RealSendProc ? RealSendProc : OriginalSendProc;
+		return koreSendFn (s, buf, len, flags);
+	}
 
-	// See if the socket to the RO server is still alive, and make
-	// sure WSAGetLastError() returns the right error if something's wrong
+	if (len <= 0 || !buf) {
+		return OriginalSendProc (s, buf, len, flags);
+	}
+
+	// Copy plaintext before calling OriginalSendProc (d3d9.dll's send hook)
+	char *plainCopy = (char *) malloc (len);
+	if (plainCopy)
+		memcpy (plainCopy, buf, len);
+
 	EnterCriticalSection (&CS_ro);
 	roServer = s;
+	int ret = OriginalSendProc (s, buf, len, flags);
+	DWORD lastErr = (ret == SOCKET_ERROR) ? WSAGetLastError () : 0;
 	LeaveCriticalSection (&CS_ro);
-	ret = OriginalSendProc (s, buf, 0, flags);
 
-	if (ret != SOCKET_ERROR && len > 0) {
+	if (ret > 0 && plainCopy) {
 		bool isAlive;
-
-		// Is Kore running?
 		EnterCriticalSection (&CS_koreClientIsAlive);
 		isAlive = koreClientIsAlive;
 		LeaveCriticalSection (&CS_koreClientIsAlive);
 
-		if (isAlive) {
-			// Don't send this packet to the RO server; send it to the X-Kore server instead
-			char *newbuf = (char *) malloc (len + 3);
+		if (isAlive)
+			queueToKore ('S', plainCopy, ret);
+	}
 
-			unsigned short sLen = (unsigned short) len;
-			memcpy (newbuf, "S", 1);
-			memcpy (newbuf + 1, &sLen, 2);
-			memcpy (newbuf + 3, buf, len);
+	if (plainCopy)
+		free (plainCopy);
 
-			// We put this packet in a string, and let the X-Kore client thread send it
-			EnterCriticalSection (&CS_send);
-			xkoreSendBuf.append (newbuf, len + 3);
-			LeaveCriticalSection (&CS_send);
-			free (newbuf);
-			return len;
+	if (ret == SOCKET_ERROR)
+		WSASetLastError (lastErr);
 
-		} else {
-			// Send packet directly to the RO server
-			ret = OriginalSendProc (s, buf, len, flags);
-			return ret;
-		}
-	} else
-		return ret;
+	return ret;
 }
 
 int WINAPI
@@ -301,80 +349,59 @@ MySendTo (SOCKET s, char* buf, int len, int flags, struct sockaddr* to, int tole
 int WINAPI
 MyRecv (SOCKET s, char* buf, int len, int flags)
 {
-	int ret = 0;
-	int ret2 = 0;
-
-	EnterCriticalSection (&CS_ro);
-	roServer = s;
-	LeaveCriticalSection (&CS_ro);
-
-	// Is Kore running?
-	EnterCriticalSection (&CS_koreClientIsAlive);
-	bool isAlive = koreClientIsAlive;
-	LeaveCriticalSection (&CS_koreClientIsAlive);
-
-	if (isAlive) {
-		// Data that the RO server sent
-		if (dataWaiting(s)) {
-			// Grab data
-			ret2 = OriginalRecvProc(s, buf, len, flags);
-			if (ret2 != SOCKET_ERROR && ret2 > 0) {
-				// Redirect it to Kore
-				char *newbuf = (char *) malloc (ret2 + 3);
-				unsigned short sLen = (unsigned short) ret2;
-				memcpy (newbuf, "R", 1);
-				memcpy (newbuf + 1, &sLen, 2);
-				memcpy (newbuf + 3, buf, ret2);
-
-				EnterCriticalSection(&CS_send);
-				xkoreSendBuf.append (newbuf, ret2 + 3);
-				LeaveCriticalSection(&CS_send);
-
-				free (newbuf);
-
-			} else if (ret2 == 0 || (ret2 == SOCKET_ERROR && WSAGetLastError () != WSAEWOULDBLOCK)) {
-				// Connection with RO server closed
-				EnterCriticalSection(&CS_ro);
-				roServer = INVALID_SOCKET;
-				LeaveCriticalSection(&CS_ro);
-			}
-		}
-
-		// Pass data from Kore to RO Client
-		EnterCriticalSection (&CS_rosend);
-		int roSendBufsize = roSendBuf.size();
-		if (roSendBufsize) {
-			ret = roSendBufsize < len? roSendBufsize : len;
-			memcpy (buf, (char *) roSendBuf.c_str (), ret);
-			roSendBuf.erase (0, ret);
-		} else {
-			WSASetLastError (WSAEWOULDBLOCK);
-			ret = SOCKET_ERROR;
-		}
-		LeaveCriticalSection (&CS_rosend);
-	} else {
-		EnterCriticalSection (&CS_rosend);
-		int roSendBufsize = roSendBuf.size();
-		LeaveCriticalSection (&CS_rosend);
-		if (roSendBufsize) {
-			// Flush out anything left thats kore->ROclient
-			ret = roSendBufsize < len? roSendBufsize : len;
-			EnterCriticalSection (&CS_rosend);
-			memcpy (buf, (char *) roSendBuf.c_str(), ret);
-			roSendBuf.erase(0, ret);
-			LeaveCriticalSection (&CS_rosend);
-		} else {
-			ret2 = OriginalRecvProc(s, buf, len, flags);
-			if (ret2 == 0 || (ret2 == SOCKET_ERROR && WSAGetLastError () != WSAEWOULDBLOCK)) {
-				EnterCriticalSection(&CS_ro);
-				roServer = INVALID_SOCKET;
-				LeaveCriticalSection(&CS_ro);
-			}
-			ret = ret2;
-		}
+	if (s == koreClient) {
+		MyRecvProc koreRecvFn = RealRecvProc ? RealRecvProc : OriginalRecvProc;
+		return koreRecvFn (s, buf, len, flags);
 	}
 
-	return ret;
+	// If OpenKore explicitly queued synthetic data for the client, deliver it first
+	SOCKET currentRo = INVALID_SOCKET;
+	EnterCriticalSection (&CS_ro);
+	currentRo = roServer;
+	LeaveCriticalSection (&CS_ro);
+
+	if (s == currentRo && currentRo != INVALID_SOCKET && len > 0 && buf) {
+		EnterCriticalSection (&CS_rosend);
+		int roSendBufsize = (int) roSendBuf.size ();
+		if (roSendBufsize > 0) {
+			int ret = roSendBufsize < len ? roSendBufsize : len;
+			memcpy (buf, roSendBuf.c_str (), ret);
+			if (!(flags & MSG_PEEK))
+				roSendBuf.erase (0, ret);
+			LeaveCriticalSection (&CS_rosend);
+			return ret;
+		}
+		LeaveCriticalSection (&CS_rosend);
+	}
+
+	// Tee mode: read from OriginalRecvProc (which invokes d3d9.dll's recv hook to
+	// decrypt Map Server S2C traffic and strip 0x0cf0 THAA frames), return it
+	// immediately to Ragnarok.exe, and tee a copy to OpenKore.
+	int ret2 = OriginalRecvProc (s, buf, len, flags);
+	if (ret2 > 0 && buf) {
+		EnterCriticalSection (&CS_ro);
+		roServer = s;
+		LeaveCriticalSection (&CS_ro);
+
+		if (!(flags & MSG_PEEK)) {
+			bool isAlive;
+			EnterCriticalSection (&CS_koreClientIsAlive);
+			isAlive = koreClientIsAlive;
+			LeaveCriticalSection (&CS_koreClientIsAlive);
+
+			if (isAlive)
+				queueToKore ('R', buf, ret2);
+		}
+	} else if (ret2 == 0 || (ret2 == SOCKET_ERROR && WSAGetLastError () != WSAEWOULDBLOCK)) {
+		DWORD lastErr = WSAGetLastError ();
+		EnterCriticalSection (&CS_ro);
+		if (roServer == s)
+			roServer = INVALID_SOCKET;
+		LeaveCriticalSection (&CS_ro);
+		WSASetLastError (lastErr);
+	}
+
+	return ret2;
 }
 
 int WINAPI
@@ -386,28 +413,38 @@ MyRecvFrom (SOCKET s, char* buf, int len, int flags, struct sockaddr* from, int 
 int WINAPI
 MyConnect (SOCKET s, struct sockaddr* name, int namelen)
 {
-	EnterCriticalSection (&CS_ro);
-	roServer = s;
-	LeaveCriticalSection (&CS_ro);
+	if (s != koreClient && name && namelen >= (int) sizeof (sockaddr_in)) {
+		const sockaddr_in *sin = (const sockaddr_in *) name;
+		if (sin->sin_family == AF_INET && sin->sin_addr.s_addr != inet_addr ("127.0.0.1")) {
+			EnterCriticalSection (&CS_ro);
+			roServer = s;
+			LeaveCriticalSection (&CS_ro);
+
+			EnterCriticalSection (&CS_rosend);
+			roSendBuf.erase ();
+			LeaveCriticalSection (&CS_rosend);
+		}
+	}
 	return OriginalConnectProc(s, name, namelen);
 }
 
 int WINAPI
 MyWSAAsyncSelect (SOCKET s, HWND hWnd, unsigned int wMsg, long lEvent)
 {
-	EnterCriticalSection (&CS_ro);
-	roServer = s;
-	LeaveCriticalSection (&CS_ro);
-	OriginalWSAAsyncSelectProc(s,hWnd,wMsg,lEvent);
-	return 0;
+	if (s != koreClient) {
+		EnterCriticalSection (&CS_ro);
+		roServer = s;
+		LeaveCriticalSection (&CS_ro);
+	}
+	return OriginalWSAAsyncSelectProc(s,hWnd,wMsg,lEvent);
 }
 
 FARPROC WINAPI
 MyGetProcAddress (HMODULE hModule, LPCSTR lpProcName)
 {
 	FARPROC ret = OriginalGetProcAddressProc (hModule, lpProcName);
-	HMODULE WS2_32 = LoadLibrary ("WS2_32.DLL");
-	if (hModule == WS2_32) {
+	HMODULE WS2_32 = GetModuleHandleA ("WS2_32.DLL");
+	if (hModule == WS2_32 && HIWORD (lpProcName) != 0) {
 		if (stricmp (lpProcName, "WSASend") == 0) {
 			OriginalWSASendProc = (MyWSASendProc) ret;
 			ret = (FARPROC) MyWSASend;
@@ -444,6 +481,14 @@ MyGetProcAddress (HMODULE hModule, LPCSTR lpProcName)
 			OriginalConnectProc = (MyConnectProc) ret;
 			ret = (FARPROC) MyConnect;
 
+		} else if (stricmp (lpProcName, "select") == 0) {
+			OriginalSelectProc = (MySelectProc) ret;
+			ret = (FARPROC) MySelect;
+
+		} else if (stricmp (lpProcName, "ioctlsocket") == 0) {
+			OriginalIoctlSocketProc = (MyIoctlSocketProc) ret;
+			ret = (FARPROC) MyIoctlSocket;
+
 		} else if (stricmp (lpProcName, "WSAAsyncSelect") == 0) {
 			OriginalWSAAsyncSelectProc = (MyWSAAsyncSelectProc) ret;
 			ret = (FARPROC) MyWSAAsyncSelect;
@@ -458,8 +503,10 @@ MyGetProcAddress (HMODULE hModule, LPCSTR lpProcName)
 static void
 DoHookProcs ()
 {
-	// Read the comment for HookImportedFunction() in utils-netredirect.cpp
-	// about what's going on here
+	RealSendProc    = (MySendProc)    GetUnpatchedWinsockProc ((PSTR)"send");
+	RealRecvProc    = (MyRecvProc)    GetUnpatchedWinsockProc ((PSTR)"recv");
+	RealSelectProc  = (MySelectProc)  GetUnpatchedWinsockProc ((PSTR)"select");
+	RealConnectProc = (MyConnectProc) GetUnpatchedWinsockProc ((PSTR)"connect");
 
 	OriginalWSASendProc = (MyWSASendProc)
 			HookImportedFunction( GetModuleHandle(0), (PSTR)"WS2_32.DLL", (PSTR)"WSASend", (PROC)MyWSASend);
@@ -491,6 +538,9 @@ DoHookProcs ()
 	OriginalSelectProc = (MySelectProc)
 			HookImportedFunction( GetModuleHandle(0), (PSTR)"WS2_32.DLL", (PSTR)"select", (PROC)MySelect);
 
+	OriginalIoctlSocketProc = (MyIoctlSocketProc)
+			HookImportedFunction( GetModuleHandle(0), (PSTR)"WS2_32.DLL", (PSTR)"ioctlsocket", (PROC)MyIoctlSocket);
+
 	OriginalWSAAsyncSelectProc = (MyWSAAsyncSelectProc)
 			HookImportedFunction( GetModuleHandle(0), (PSTR)"WS2_32.DLL", (PSTR)"WSAAsyncSelect", (PROC)MyWSAAsyncSelect);
 
@@ -515,22 +565,20 @@ init ()
 	debug ("Hooking functions...\n");
 	DoHookProcs ();
 	debug ("Creating thread...\n");
-	CreateThread (0, 0, (LPTHREAD_START_ROUTINE) koreConnectionMain, 0, 0, &threadID);
+	CreateThread (0, 0, koreConnectionMain, 0, 0, &threadID);
 	debug ("Thread created\n");
 }
 
 
 /********* DLL injection support for Win9x *********/
 
-//#define TESTING_INJECT9x
-
 static int isNT = 0;
 static int started = 0;
 static HINSTANCE hDll = 0;
 static HHOOK hookID = 0;
 
-static int
-start ()
+static DWORD WINAPI
+start (LPVOID)
 {
 	init ();
 	return 0;
@@ -549,10 +597,7 @@ hookProc (int code, WPARAM wParam, LPARAM lParam)
 		if (LoadLibrary (lib))
 			UnhookWindowsHookEx (hookID);
 
-		// For some reason RO crashes if I call init() here.
-		// Calling it in a thread seems to fix the problem.
-		// (but won't we get race conditions??)
-		CreateThread (NULL, 0, (LPTHREAD_START_ROUTINE) start, NULL, 0, &threadID);
+		CreateThread (NULL, 0, start, NULL, 0, &threadID);
 	}
 	return CallNextHookEx (hookID, code, wParam, lParam);
 }
@@ -587,25 +632,17 @@ DllMain (HINSTANCE hInstance, DWORD dwReason, LPVOID _Reserved)
 	case DLL_PROCESS_ATTACH:
 		hDll = hInstance;
 
-		// Check whether debugging should be enabled
 		HKEY key;
 		DWORD type, size;
 		BYTE val[1024];
 
 		size = sizeof (val) - 1;
 		val[0] = '\0';
-		RegOpenKey (HKEY_CURRENT_USER,
-			"Software\\Kore",
-			&key);
-		RegQueryValueEx (key,
-			"DebugNetRedirect",
-			NULL,
-			&type,
-			val,
-			&size);
-		RegCloseKey (key);
+		if (RegOpenKey (HKEY_CURRENT_USER, "Software\\Kore", &key) == ERROR_SUCCESS) {
+			RegQueryValueEx (key, "DebugNetRedirect", NULL, &type, val, &size);
+			RegCloseKey (key);
+		}
 		enableDebug = val[0] == '1';
-
 
 		#ifndef TESTING_INJECT9x
 		OSVERSIONINFO version;
@@ -614,9 +651,6 @@ DllMain (HINSTANCE hInstance, DWORD dwReason, LPVOID _Reserved)
 		GetVersionEx (&version);
 		isNT = version.dwPlatformId == VER_PLATFORM_WIN32_NT;
 
-		// If we're injected on Win9x, then init() must
-		// be called from a different function (see above).
-		// This is because Kore LoadLibrary() this dll when on Win9x.
 		if (isNT)
 			init ();
 		#endif

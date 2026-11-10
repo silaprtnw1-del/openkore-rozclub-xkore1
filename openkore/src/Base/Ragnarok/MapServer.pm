@@ -81,6 +81,9 @@ sub map_login {
 			switch => 'map_loaded',
 			syncMapSync => int time,
 			coords => $coords,
+			xSize => $self->{recvPacketParser}{packet_lut}{map_loaded} eq '02EB' ? pack('C', 5) : 5,
+			ySize => $self->{recvPacketParser}{packet_lut}{map_loaded} eq '02EB' ? pack('C', 5) : 5,
+			font => 0,
 		}));
 	}
 	

@@ -594,6 +594,10 @@ sub ai_storageAutoCheck {
 
 	for my $item (@{$char->inventory}) {
 		next if ($item->{equipped});
+		# ROZCLUB fix (2026-11-06): an item the Kafra refused (account-bound Novice items etc.; kept per item ID in %ai_v because the inventory objects are rebuilt after every storage visit)
+		# must not start a new storage trip every few seconds (each trip costs zeny). Skip it
+		# for 30 minutes after a failed attempt.
+		next if ($ai_v{storage_failed}{$item->{nameID}} && !timeOut($ai_v{storage_failed}{$item->{nameID}}, 1800));
 		my $control = Misc::items_control($item->{name}, $item->{nameID});
 		if ($control->{storage} && $item->{amount} > $control->{keep}) {
 			return 1;

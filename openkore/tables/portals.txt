@@ -265,7 +265,7 @@ moc_fild20 203 336 moc_fild01 86 32 0 c r1 c c c c r2
 moc_fild20 215 336 moc_fild01 86 32 0 c r1 c c c c r2
 moc_fild20 203 336 morocc 160 61 0 c r1 c c c c r1 c c r1
 moc_fild20 215 336 morocc 160 61 0 c r1 c c c c r1 c c r1
-morocc 299 207 moc_fild20 36 177
+# morocc 299 207 moc_fild20 36 177 (removed: no warp on ROZCLUB)
 prt_fild09 95 19 moc_fild20 209 333
 prt_fild09 246 17 moc_fild20 209 333
 prt_fild10 263 23 moc_fild20 209 333
